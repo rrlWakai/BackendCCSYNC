@@ -1,0 +1,29 @@
+server {
+    listen ${PORT};
+    listen [::]:${PORT};
+    server_name _;
+    root /var/www/html/public;
+    index index.php;
+
+    access_log /dev/stdout;
+    error_log /dev/stderr warn;
+    client_max_body_size 20m;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_NAME $fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_index index.php;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}
