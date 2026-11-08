@@ -23,8 +23,8 @@ return [
         'mysql' => [
             'driver' => 'mysql',
             'url' => env('DB_URL'),
-            'host' => env('DB_HOST', 'ccsync-mysql-lumborhenrhena-1cec.h.aivencloud.com'),
-            'port' => env('DB_PORT', '18596'),
+            'host' => env('DB_HOST', '127.0.0.1'),
+            'port' => env('DB_PORT', '3306'),
             'database' => env('DB_DATABASE', 'ccsync_db'),
             'username' => env('DB_USERNAME', 'ccsync_app'),
             'password' => env('DB_PASSWORD', ''),
