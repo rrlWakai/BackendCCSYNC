@@ -9,6 +9,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
@@ -22,6 +23,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(at: '*');
+
         $middleware->statefulApi();
 
         $middleware->api(prepend: [
@@ -88,6 +91,13 @@ return Application::configure(basePath: dirname(__DIR__))
             if (! $request->is('api/*')) {
                 return null;
             }
+
+            Log::error('Unhandled API exception.', [
+                'path' => $request->path(),
+                'exception_class' => $exception::class,
+                'exception_message' => $exception->getMessage(),
+                'exception' => $exception,
+            ]);
 
             return ApiResponse::error(
                 config('app.debug') ? $exception->getMessage() : 'An unexpected error occurred.',

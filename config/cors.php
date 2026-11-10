@@ -6,10 +6,10 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => array_values(array_filter([
-        env('FRONTEND_ADMIN_URL', 'ccsync-eight.vercel.app'),
-        env('FRONTEND_CLASSFLOW_URL', 'classflow-seven-coral.vercel.app'),
-    ])),
+    'allowed_origins' => array_values(array_filter(array_map(
+        fn ($origin): string => rtrim(trim((string) $origin), '/'),
+        [env('FRONTEND_ADMIN_URL'), env('FRONTEND_CLASSFLOW_URL')],
+    ))),
 
     'allowed_origins_patterns' => [],
 
