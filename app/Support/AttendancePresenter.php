@@ -79,7 +79,7 @@ final class AttendancePresenter
             'status' => $attendance->status,
             'check_in_at' => $attendance->check_in_at === null
                 ? null
-                : substr((string) $attendance->check_in_at, 0, 5),
+                : AttendanceClock::formatTime((string) $attendance->check_in_at),
             'remarks' => $attendance->remarks,
             'submission_source' => $attendance->submission_source,
             'recorded_by_user_id' => $attendance->recorded_by_user_id,
@@ -98,10 +98,10 @@ final class AttendancePresenter
                     'new_status' => $change->new_status,
                     'previous_check_in_at' => $change->previous_check_in_at === null
                         ? null
-                        : substr((string) $change->previous_check_in_at, 0, 5),
+                        : AttendanceClock::formatTime((string) $change->previous_check_in_at),
                     'new_check_in_at' => $change->new_check_in_at === null
                         ? null
-                        : substr((string) $change->new_check_in_at, 0, 5),
+                        : AttendanceClock::formatTime((string) $change->new_check_in_at),
                     'previous_remarks' => $change->previous_remarks,
                     'new_remarks' => $change->new_remarks,
                     'correction_reason' => $change->correction_reason,

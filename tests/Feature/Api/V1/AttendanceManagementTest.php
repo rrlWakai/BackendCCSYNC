@@ -23,7 +23,7 @@ class AttendanceManagementTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        CarbonImmutable::setTestNow('2026-11-05 12:00:00');
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-05 12:00:00', 'Asia/Manila'));
     }
 
     protected function tearDown(): void
@@ -56,6 +56,28 @@ class AttendanceManagementTest extends TestCase
             'id' => $sessionId,
             'created_by_user_id' => $fixture['professor_user']->id,
         ]);
+    }
+
+    public function test_session_creation_uses_the_campus_date_during_early_morning_hours(): void
+    {
+        $fixture = $this->makeAttendanceFixture();
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 07:00:00', 'Asia/Manila'));
+
+        $this->actingAs($fixture['professor_user'])
+            ->postJson('/api/v1/attendance/sessions', [
+                'class_schedule_id' => $fixture['schedule']->id,
+                'class_date' => '2026-11-02',
+            ])
+            ->assertCreated();
+
+        $fixture['schedule']->update(['day_of_week' => 2]);
+
+        $this->postJson('/api/v1/attendance/sessions', [
+            'class_schedule_id' => $fixture['schedule']->id,
+            'class_date' => '2026-11-03',
+        ])
+            ->assertUnprocessable()
+            ->assertJsonStructure(['errors' => ['class_date']]);
     }
 
     public function test_attendance_session_rejects_unassigned_cancelled_future_and_wrong_weekday_schedules(): void

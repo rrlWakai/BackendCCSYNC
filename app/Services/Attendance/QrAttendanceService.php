@@ -7,6 +7,7 @@ use App\Models\AttendanceQrToken;
 use App\Models\AttendanceSession;
 use App\Models\StudentAttendance;
 use App\Models\User;
+use App\Support\AttendanceClock;
 use App\Support\AttendancePresenter;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -185,7 +186,7 @@ final class QrAttendanceService
                     'attendance_session_id' => $session->id,
                     'student_subject_enrollment_id' => $enrollment->id,
                     'status' => $this->statusForCheckIn($session, $now),
-                    'check_in_at' => $now->format('H:i:s'),
+                    'check_in_at' => AttendanceClock::checkInTime($now),
                     'remarks' => null,
                     'submission_source' => StudentAttendance::SOURCE_QR,
                     'recorded_by_user_id' => $studentUser->id,
@@ -246,9 +247,9 @@ final class QrAttendanceService
                         'name' => $enrollment->student->user->name,
                     ],
                     'status' => $record->status,
-                    'check_in_at' => $record->check_in_at === null
-                        ? null
-                        : substr((string) $record->check_in_at, 0, 5),
+                    'check_in_at' => AttendanceClock::formatTime(
+                        $record->check_in_at === null ? null : (string) $record->check_in_at,
+                    ),
                     'submission_source' => $record->submission_source,
                 ];
             })->values()->all(),
@@ -280,13 +281,7 @@ final class QrAttendanceService
         AttendanceSession $session,
         CarbonImmutable $now,
     ): string {
-        $classStart = CarbonImmutable::parse(
-            $session->class_date->toDateString().' '.(string) $session->classSchedule->start_time,
-            config('app.timezone'),
-        );
-        $lateAt = $classStart->addMinutes(max(0, (int) config('attendance.qr_late_after_minutes', 15)));
-
-        return $now->greaterThanOrEqualTo($lateAt) ? 'late' : 'present';
+        return AttendanceClock::statusForCheckIn($session, $now);
     }
 
     private function generateToken(): string

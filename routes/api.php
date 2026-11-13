@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\V1\SectionController;
 use App\Http\Controllers\Api\V1\StudentController;
 use App\Http\Controllers\Api\V1\StudentScheduleConflictController;
 use App\Http\Controllers\Api\V1\SubjectController;
+use App\Http\Controllers\Api\V1\SubjectOfferingController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\YearLevelController;
 use Illuminate\Support\Facades\Route;
@@ -80,6 +81,19 @@ Route::prefix('v1')
                 Route::post('/sections', [SectionController::class, 'store'])->name('sections.store');
                 Route::get('/sections/{section}', [SectionController::class, 'show'])->name('sections.show');
                 Route::patch('/sections/{section}', [SectionController::class, 'update'])->name('sections.update');
+
+                Route::get('/subject-offerings/options', [SubjectOfferingController::class, 'options'])
+                    ->name('subject-offerings.options');
+                Route::get('/subject-offerings', [SubjectOfferingController::class, 'index'])
+                    ->name('subject-offerings.index');
+                Route::post('/subject-offerings', [SubjectOfferingController::class, 'store'])
+                    ->name('subject-offerings.store');
+                Route::get('/subject-offerings/{subjectOffering}', [SubjectOfferingController::class, 'show'])
+                    ->name('subject-offerings.show');
+                Route::patch('/subject-offerings/{subjectOffering}', [SubjectOfferingController::class, 'update'])
+                    ->name('subject-offerings.update');
+                Route::patch('/subject-offerings/{subjectOffering}/status', [SubjectOfferingController::class, 'updateStatus'])
+                    ->name('subject-offerings.status');
             });
 
         Route::middleware(['auth:sanctum', 'active', 'role:administrator,department_personnel'])

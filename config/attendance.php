@@ -2,6 +2,8 @@
 
 return [
 
+    'timezone' => env('ATTENDANCE_TIMEZONE', 'Asia/Manila'),
+
     /*
     |--------------------------------------------------------------------------
     | QR attendance token lifetime

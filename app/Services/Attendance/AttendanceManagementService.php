@@ -9,6 +9,7 @@ use App\Models\Role;
 use App\Models\StudentAttendance;
 use App\Models\StudentSubjectEnrollment;
 use App\Models\User;
+use App\Support\AttendanceClock;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -26,11 +27,11 @@ final class AttendanceManagementService
             $offering = $lockedSchedule->subjectOffering()->with('academicTerm')->firstOrFail();
             $this->assertScheduleUsable($lockedSchedule, $actor);
 
-            $timezone = config('app.timezone');
+            $timezone = AttendanceClock::timezone();
             $date = CarbonImmutable::createFromFormat('!Y-m-d', $classDate, $timezone);
             $term = $offering->academicTerm;
 
-            if ($date->isAfter(CarbonImmutable::today($timezone))
+            if ($date->isAfter(AttendanceClock::today())
                 || $date->dayOfWeekIso !== $lockedSchedule->day_of_week
                 || $date->toDateString() < $term->starts_on->toDateString()
                 || $date->toDateString() > $term->ends_on->toDateString()) {
@@ -303,10 +304,7 @@ final class AttendanceManagementService
     {
         $session->loadMissing('classSchedule.subjectOffering');
         $schedule = $session->classSchedule;
-        $classStartUtc = CarbonImmutable::parse(
-            $session->class_date->toDateString().' '.(string) $schedule->start_time,
-            config('app.timezone'),
-        )->utc()->format('Y-m-d H:i:s');
+        $classStartUtc = AttendanceClock::classStart($session)->utc()->format('Y-m-d H:i:s');
 
         return StudentSubjectEnrollment::query()
             ->select('student_subject_enrollments.*')
@@ -326,6 +324,6 @@ final class AttendanceManagementService
 
     private function timeValue(?string $value): ?string
     {
-        return $value === null ? null : substr($value, 0, 5);
+        return AttendanceClock::formatTime($value);
     }
 }

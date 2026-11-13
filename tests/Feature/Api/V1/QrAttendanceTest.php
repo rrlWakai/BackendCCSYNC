@@ -7,7 +7,6 @@ use App\Models\AttendanceQrToken;
 use App\Models\AttendanceSession;
 use App\Models\Role;
 use App\Models\ScheduleAssignment;
-use App\Models\StudentAttendance;
 use App\Models\StudentSubjectEnrollment;
 use App\Models\User;
 use Carbon\CarbonImmutable;
@@ -25,7 +24,7 @@ class QrAttendanceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        CarbonImmutable::setTestNow('2026-11-02 08:05:00');
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 08:05:00', 'Asia/Manila'));
     }
 
     protected function tearDown(): void
@@ -124,21 +123,43 @@ class QrAttendanceTest extends TestCase
             ->assertJsonPath('data.qr.monitoring.checked_in_students.0.student.id', $fixture['student']->id);
     }
 
-    public function test_check_in_after_the_late_threshold_is_recorded_as_late(): void
+    public function test_early_check_in_uses_campus_local_time(): void
     {
         $fixture = $this->makeAttendanceFixture();
-        CarbonImmutable::setTestNow('2026-11-02 08:20:00');
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 07:05:00', 'Asia/Manila'));
         $session = $this->createSession($fixture);
         $token = $this->startQr($session, $fixture['professor_user'])['token'];
 
         $this->actingAs($fixture['student_user'])
             ->postJson('/api/v1/attendance/qr/check-in', ['token' => $token])
             ->assertOk()
-            ->assertJsonPath('data.attendance.status', 'late');
+            ->assertJsonPath('data.attendance.status', 'present')
+            ->assertJsonPath('data.attendance.check_in_at', '07:05');
+
+        $this->assertDatabaseHas('student_attendance', [
+            'attendance_session_id' => $session->id,
+            'status' => 'present',
+            'check_in_at' => '07:05:00',
+        ]);
+    }
+
+    public function test_check_in_after_the_late_threshold_is_recorded_as_late(): void
+    {
+        $fixture = $this->makeAttendanceFixture();
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 08:20:00', 'Asia/Manila'));
+        $session = $this->createSession($fixture);
+        $token = $this->startQr($session, $fixture['professor_user'])['token'];
+
+        $this->actingAs($fixture['student_user'])
+            ->postJson('/api/v1/attendance/qr/check-in', ['token' => $token])
+            ->assertOk()
+            ->assertJsonPath('data.attendance.status', 'late')
+            ->assertJsonPath('data.attendance.check_in_at', '08:20');
 
         $this->assertDatabaseHas('student_attendance', [
             'attendance_session_id' => $session->id,
             'status' => 'late',
+            'check_in_at' => '08:20:00',
             'submission_source' => 'qr',
         ]);
     }
@@ -149,7 +170,7 @@ class QrAttendanceTest extends TestCase
         $session = $this->createSession($fixture);
         $token = $this->startQr($session, $fixture['professor_user'])['token'];
 
-        CarbonImmutable::setTestNow('2026-11-02 08:05:31');
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-02 08:05:31', 'Asia/Manila'));
 
         $this->actingAs($fixture['student_user'])
             ->postJson('/api/v1/attendance/qr/check-in', ['token' => $token])
