@@ -4,6 +4,7 @@ namespace App\Http\Requests\Users;
 
 use App\Models\Role;
 use App\Models\User;
+use App\Rules\InstitutionalEmail;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -61,6 +62,7 @@ final class UpdateUserRequest extends FormRequest
                 'email',
                 'max:255',
                 Rule::unique('users', 'email')->ignore($target),
+                ...($isStudent || $isProfessor ? [new InstitutionalEmail] : []),
             ],
             'password' => ['sometimes', 'nullable', 'string', Password::min(12), 'confirmed'],
             'role' => ['prohibited'],
@@ -77,8 +79,9 @@ final class UpdateUserRequest extends FormRequest
                 $studentNumberRule,
             ],
             'profile.employee_number' => [
-                Rule::requiredIf($isProfessor && $this->has('profile')),
                 Rule::prohibitedIf(! $isProfessor),
+                'sometimes',
+                'nullable',
                 'string',
                 'max:32',
                 $employeeNumberRule,

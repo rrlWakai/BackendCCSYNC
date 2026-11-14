@@ -10,6 +10,7 @@ use App\Http\Requests\Scheduling\IndexSchedulesRequest;
 use App\Http\Requests\Scheduling\ReleaseRoomAllocationRequest;
 use App\Http\Requests\Scheduling\ResolveScheduleConflictRequest;
 use App\Http\Requests\Scheduling\SchedulingOptionsRequest;
+use App\Http\Requests\Scheduling\SchedulingReadinessRequest;
 use App\Http\Requests\Scheduling\StoreClassScheduleRequest;
 use App\Http\Requests\Scheduling\StoreFacultyAssignmentRequest;
 use App\Http\Requests\Scheduling\StoreRoomAllocationRequest;
@@ -29,6 +30,7 @@ use App\Models\Section;
 use App\Models\Subject;
 use App\Models\SubjectOffering;
 use App\Services\Scheduling\ScheduleManagementService;
+use App\Services\Scheduling\SchedulingReadinessService;
 use App\Support\ApiResponse;
 use App\Support\SchedulePresenter;
 use Illuminate\Database\Eloquent\Builder;
@@ -40,7 +42,10 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 final class SchedulingController extends Controller
 {
-    public function __construct(private readonly ScheduleManagementService $scheduling) {}
+    public function __construct(
+        private readonly ScheduleManagementService $scheduling,
+        private readonly SchedulingReadinessService $readiness,
+    ) {}
 
     public function options(SchedulingOptionsRequest $request): JsonResponse
     {
@@ -124,6 +129,16 @@ final class SchedulingController extends Controller
                 ->orderBy('code')
                 ->get(['id', 'code', 'name', 'building', 'capacity', 'room_type', 'status']),
         ], 'Scheduling options loaded.');
+    }
+
+    public function readiness(SchedulingReadinessRequest $request): JsonResponse
+    {
+        $term = AcademicTerm::query()->findOrFail($request->validated('academic_term_id'));
+
+        return ApiResponse::success(
+            ['readiness' => $this->readiness->inspect($term)],
+            'Scheduling readiness loaded.',
+        );
     }
 
     public function index(IndexSchedulesRequest $request): JsonResponse

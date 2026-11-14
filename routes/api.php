@@ -10,6 +10,8 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\FacultyController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\RoomController;
+use App\Http\Controllers\Api\V1\RegistrationController;
+use App\Http\Controllers\Api\V1\RegistrationOptionsController;
 use App\Http\Controllers\Api\V1\SchedulingController;
 use App\Http\Controllers\Api\V1\SectionController;
 use App\Http\Controllers\Api\V1\StudentController;
@@ -27,6 +29,20 @@ Route::prefix('v1')
 
         Route::prefix('auth')->name('auth.')->group(function (): void {
             Route::post('/login', [AuthController::class, 'login'])->name('login');
+            Route::post('/register/student', [RegistrationController::class, 'registerStudent'])
+                ->middleware('throttle:10,1')
+                ->name('register.student');
+            Route::post('/register/professor', [RegistrationController::class, 'registerProfessor'])
+                ->middleware('throttle:10,1')
+                ->name('register.professor');
+            Route::post('/register/professor/resubmit', [RegistrationController::class, 'resubmitProfessor'])
+                ->middleware('throttle:10,1')
+                ->name('register.professor.resubmit');
+            Route::post('/register/professor/correction', [RegistrationController::class, 'professorCorrection'])
+                ->middleware('throttle:10,1')
+                ->name('register.professor.correction');
+            Route::get('/registration/options', RegistrationOptionsController::class)
+                ->name('registration.options');
 
             Route::middleware(['auth:sanctum', 'active'])->group(function (): void {
                 Route::get('/me', [AuthController::class, 'me'])->name('me');
@@ -49,6 +65,16 @@ Route::prefix('v1')
                     ->name('program-access.update');
                 Route::patch('/{user}/status', [UserController::class, 'updateStatus'])
                     ->name('status');
+                Route::middleware('role:administrator')->group(function (): void {
+                    Route::post('/departments', [UserController::class, 'storeDepartment'])
+                        ->name('departments.store');
+                    Route::post('/{user}/approve-professor', [UserController::class, 'approveProfessor'])
+                        ->name('professor.approve');
+                    Route::post('/{user}/return-professor', [UserController::class, 'returnProfessorForCorrection'])
+                        ->name('professor.return');
+                    Route::post('/{user}/reject-professor', [UserController::class, 'rejectProfessor'])
+                        ->name('professor.reject');
+                });
             });
 
         Route::middleware(['auth:sanctum', 'active', 'role:administrator,department_personnel'])
@@ -286,6 +312,8 @@ Route::prefix('v1')
         Route::middleware(['auth:sanctum', 'active', 'role:administrator,department_personnel'])->group(function (): void {
             Route::get('/scheduling/options', [SchedulingController::class, 'options'])
                 ->name('scheduling.options');
+            Route::get('/scheduling/readiness', [SchedulingController::class, 'readiness'])
+                ->name('scheduling.readiness');
             Route::get('/faculty-assignments', [SchedulingController::class, 'facultyAssignments'])
                 ->name('faculty-assignments.index');
             Route::post('/faculty-assignments', [SchedulingController::class, 'storeFacultyAssignment'])

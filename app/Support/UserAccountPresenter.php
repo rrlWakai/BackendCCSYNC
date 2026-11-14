@@ -7,12 +7,14 @@ use App\Models\User;
 
 final class UserAccountPresenter
 {
-    public static function toArray(User $user): array
+    public static function toArray(User $user, bool $includeReviewHistory = false): array
     {
         $user->loadMissing([
             'role',
             'student.program',
+            'student.section.yearLevel',
             'professor.program',
+            'professor.department',
             'departmentPersonnelPrograms:id,code,name,status',
         ]);
 
@@ -27,6 +29,16 @@ final class UserAccountPresenter
                     'code' => $user->student->program->code,
                     'name' => $user->student->program->name,
                 ],
+                'year_level' => $user->student->section?->yearLevel === null ? null : [
+                    'id' => $user->student->section->yearLevel->id,
+                    'level' => $user->student->section->yearLevel->level,
+                    'name' => $user->student->section->yearLevel->name,
+                ],
+                'section' => $user->student->section === null ? null : [
+                    'id' => $user->student->section->id,
+                    'code' => $user->student->section->code,
+                    'name' => $user->student->section->name,
+                ],
                 'admitted_on' => $user->student->admitted_on?->toDateString(),
             ];
         } elseif ($user->professor !== null) {
@@ -35,6 +47,14 @@ final class UserAccountPresenter
                 'employee_number' => $user->professor->employee_number,
                 'employment_type' => $user->professor->employment_type,
                 'specialization' => $user->professor->specialization,
+                'department' => $user->professor->department === null ? null : [
+                    'id' => $user->professor->department->id,
+                    'code' => $user->professor->department->code,
+                    'name' => $user->professor->department->name,
+                ],
+                'department_affiliation' => $user->professor->department === null
+                    ? null
+                    : ($user->professor->department->code === 'CCS' ? 'ccs' : 'other'),
                 'program' => $user->professor->program === null ? null : [
                     'id' => $user->professor->program->id,
                     'code' => $user->professor->program->code,
@@ -43,7 +63,7 @@ final class UserAccountPresenter
             ];
         }
 
-        return [
+        $result = [
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
@@ -63,5 +83,26 @@ final class UserAccountPresenter
                 ])->values()->all()
                 : [],
         ];
+
+        if ($includeReviewHistory && $user->hasRole(Role::PROFESSOR)) {
+            $user->loadMissing('professorRegistrationReviews.actor:id,name');
+            $result['review_history'] = $user->professorRegistrationReviews
+                ->sortBy('created_at')
+                ->map(fn ($review): array => [
+                    'id' => $review->id,
+                    'action' => $review->action,
+                    'reason' => $review->reason,
+                    'registration' => $review->registration_snapshot,
+                    'actor' => [
+                        'id' => $review->actor->id,
+                        'name' => $review->actor->name,
+                    ],
+                    'created_at' => $review->created_at?->toIso8601String(),
+                ])
+                ->values()
+                ->all();
+        }
+
+        return $result;
     }
 }

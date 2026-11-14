@@ -4,6 +4,7 @@ namespace App\Http\Requests\Users;
 
 use App\Models\Role;
 use App\Models\User;
+use App\Rules\InstitutionalEmail;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -31,10 +32,15 @@ final class StoreUserRequest extends FormRequest
         $profileKeys = $isStudent
             ? 'student_number,program_id,admitted_on'
             : 'employee_number,program_id,employment_type,specialization';
+        $emailRules = ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')];
+
+        if ($isStudent || $isProfessor) {
+            $emailRules[] = new InstitutionalEmail;
+        }
 
         return [
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')],
+            'email' => $emailRules,
             'password' => ['required', 'string', Password::min(12), 'confirmed'],
             'role' => ['required', Rule::in([
                 Role::ADMINISTRATOR,

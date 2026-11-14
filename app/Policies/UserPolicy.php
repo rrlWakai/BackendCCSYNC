@@ -38,6 +38,12 @@ final class UserPolicy
             && $target->hasRole(Role::DEPARTMENT_PERSONNEL);
     }
 
+    public function reviewProfessorRegistration(User $actor, User $target): bool
+    {
+        return $actor->hasRole(Role::ADMINISTRATOR)
+            && $target->hasRole(Role::PROFESSOR);
+    }
+
     private function canManageTarget(User $actor, User $target): bool
     {
         if ($actor->hasRole(Role::ADMINISTRATOR)) {

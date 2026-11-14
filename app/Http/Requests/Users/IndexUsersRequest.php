@@ -24,7 +24,14 @@ final class IndexUsersRequest extends FormRequest
                 Role::PROFESSOR,
                 Role::STUDENT,
             ])],
-            'status' => ['sometimes', 'nullable', Rule::in(['active', 'inactive', 'suspended'])],
+            'status' => ['sometimes', 'nullable', Rule::in([
+                'active',
+                'inactive',
+                'suspended',
+                'pending_approval',
+                'needs_correction',
+                'rejected',
+            ])],
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
         ];
     }

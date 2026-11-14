@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -50,6 +51,11 @@ class User extends Authenticatable
     public function professor(): HasOne
     {
         return $this->hasOne(Professor::class);
+    }
+
+    public function professorRegistrationReviews(): HasMany
+    {
+        return $this->hasMany(ProfessorRegistrationReview::class, 'account_user_id');
     }
 
     public function departmentPersonnelPrograms(): BelongsToMany

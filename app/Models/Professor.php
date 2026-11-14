@@ -16,6 +16,7 @@ class Professor extends Model
         'user_id',
         'employee_number',
         'program_id',
+        'department_id',
         'employment_type',
         'specialization',
         'status',
@@ -29,6 +30,11 @@ class Professor extends Model
     public function program(): BelongsTo
     {
         return $this->belongsTo(Program::class);
+    }
+
+    public function department(): BelongsTo
+    {
+        return $this->belongsTo(Department::class);
     }
 
     public function facultyAvailability(): HasMany

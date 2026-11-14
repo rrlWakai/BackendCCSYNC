@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Models\Role;
 use App\Support\ApiResponse;
 use App\Support\UserPresenter;
 use Illuminate\Http\JsonResponse;
@@ -44,6 +45,19 @@ final class AuthController extends Controller
             Auth::guard('web')->logout();
             $request->session()->invalidate();
             $request->session()->regenerateToken();
+
+            if ($user instanceof \App\Models\User && $user->hasRole(Role::PROFESSOR)) {
+                $message = match ($user->status) {
+                    'pending_approval' => 'Your professor registration is pending administrator approval.',
+                    'needs_correction' => 'Your professor registration was returned for correction. Use the registration correction flow to resubmit it.',
+                    'rejected' => 'Your professor registration was rejected.',
+                    default => null,
+                };
+
+                if ($message !== null) {
+                    return ApiResponse::error($message, 403);
+                }
+            }
 
             return $this->failedLoginResponse($emailKey, $ipKey);
         }

@@ -16,6 +16,7 @@ class Student extends Model
         'user_id',
         'student_number',
         'program_id',
+        'section_id',
         'admitted_on',
         'status',
     ];
@@ -35,6 +36,11 @@ class Student extends Model
     public function program(): BelongsTo
     {
         return $this->belongsTo(Program::class);
+    }
+
+    public function section(): BelongsTo
+    {
+        return $this->belongsTo(Section::class);
     }
 
     public function enrollments(): HasMany
