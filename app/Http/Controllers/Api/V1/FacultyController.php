@@ -168,21 +168,46 @@ final class FacultyController extends Controller
         StoreFacultyAvailabilityRequest $request,
         Professor $professor,
     ): JsonResponse {
-        $attributes = $request->validated();
+        $validated = $request->validated();
+        $isBatch = array_key_exists('windows', $validated);
+        $submittedWindows = $isBatch ? $validated['windows'] : [$validated];
+        $windows = array_map(
+            fn (array $window): array => [
+                'academic_term_id' => (int) $validated['academic_term_id'],
+                'day_of_week' => (int) $window['day_of_week'],
+                'start_time' => $window['start_time'],
+                'end_time' => $window['end_time'],
+                'availability_type' => $window['availability_type'],
+                'notes' => $window['notes'] ?? null,
+            ],
+            $submittedWindows,
+        );
 
-        $availability = DB::transaction(function () use ($attributes, $professor): FacultyAvailability {
+        $availability = DB::transaction(function () use ($windows, $isBatch, $professor) {
             $lockedProfessor = Professor::query()->lockForUpdate()->findOrFail($professor->id);
-            $this->assertNoOverlap($lockedProfessor, $attributes);
-            $this->assertScheduleCompatibility($lockedProfessor, $attributes);
+            if ($isBatch) {
+                $this->assertNoBatchOverlap($lockedProfessor, $windows);
+            } else {
+                $this->assertNoOverlap($lockedProfessor, $windows[0]);
+            }
+            $this->assertScheduleCompatibilityForWindows($lockedProfessor, $windows);
 
-            return $lockedProfessor->facultyAvailability()->create($attributes);
+            return collect($windows)
+                ->map(fn (array $attributes): FacultyAvailability => $lockedProfessor
+                    ->facultyAvailability()
+                    ->create($attributes)
+                    ->load('academicTerm:id,academic_year,term,name'));
         });
 
-        $availability->load('academicTerm:id,academic_year,term,name');
+        $presented = $availability
+            ->map(ProfessorPresenter::availabilityArray(...))
+            ->all();
 
         return ApiResponse::success(
-            ['availability' => ProfessorPresenter::availabilityArray($availability)],
-            'Faculty availability created.',
+            $isBatch
+                ? ['availabilities' => $presented]
+                : ['availability' => $presented[0]],
+            $isBatch ? 'Faculty availability windows created.' : 'Faculty availability created.',
             201,
         );
     }
@@ -192,6 +217,8 @@ final class FacultyController extends Controller
         FacultyAvailability $availability,
     ): JsonResponse {
         $attributes = $request->validated();
+        $attributes['academic_term_id'] = (int) $attributes['academic_term_id'];
+        $attributes['day_of_week'] = (int) $attributes['day_of_week'];
 
         $availability = DB::transaction(function () use ($attributes, $availability): FacultyAvailability {
             $professor = Professor::query()->lockForUpdate()->findOrFail($availability->professor_id);
@@ -267,20 +294,56 @@ final class FacultyController extends Controller
         }
     }
 
+    private function assertNoBatchOverlap(Professor $professor, array $windows): void
+    {
+        foreach ($windows as $index => $attributes) {
+            $overlap = $professor->facultyAvailability()
+                ->where('academic_term_id', $attributes['academic_term_id'])
+                ->where('day_of_week', $attributes['day_of_week'])
+                ->where('start_time', '<', $attributes['end_time'])
+                ->where('end_time', '>', $attributes['start_time'])
+                ->exists();
+
+            $overlapsSubmittedWindow = collect(array_slice($windows, 0, $index))
+                ->contains(fn (array $window): bool => (int) $window['academic_term_id'] === (int) $attributes['academic_term_id']
+                    && (int) $window['day_of_week'] === (int) $attributes['day_of_week']
+                    && $window['start_time'] < $attributes['end_time']
+                    && $window['end_time'] > $attributes['start_time']);
+
+            if ($overlap || $overlapsSubmittedWindow) {
+                throw ValidationException::withMessages([
+                    "windows.{$index}.start_time" => 'This availability overlaps another window for the selected term and day.',
+                ]);
+            }
+        }
+    }
+
     private function assertScheduleCompatibility(
         Professor $professor,
         ?array $replacement,
         ?FacultyAvailability $replacing = null,
     ): void {
-        $termIds = array_values(array_unique(array_filter([
-            $replacement['academic_term_id'] ?? null,
-            $replacing?->academic_term_id,
-        ])));
+        $this->assertScheduleCompatibilityForWindows(
+            $professor,
+            $replacement === null ? [] : [$replacement],
+            $replacing,
+        );
+    }
+
+    private function assertScheduleCompatibilityForWindows(
+        Professor $professor,
+        array $replacements,
+        ?FacultyAvailability $replacing = null,
+    ): void {
+        $termIds = array_values(array_unique(array_filter(array_merge(
+            array_column($replacements, 'academic_term_id'),
+            [$replacing?->academic_term_id],
+        ))));
         $daysByTerm = [];
         if ($replacing !== null) {
             $daysByTerm[$replacing->academic_term_id][] = $replacing->day_of_week;
         }
-        if ($replacement !== null) {
+        foreach ($replacements as $replacement) {
             $daysByTerm[$replacement['academic_term_id']][] = $replacement['day_of_week'];
         }
 
@@ -303,7 +366,7 @@ final class FacultyController extends Controller
                 ->all();
         }
 
-        if ($replacement !== null) {
+        foreach ($replacements as $replacement) {
             $windowsByTerm[$replacement['academic_term_id']][] = [
                 'day_of_week' => $replacement['day_of_week'],
                 'start_time' => $replacement['start_time'],
@@ -340,6 +403,10 @@ final class FacultyController extends Controller
                     $windows,
                     fn (array $window): bool => $window['day_of_week'] === $schedule->day_of_week,
                 ));
+                if ($dayWindows === []) {
+                    continue;
+                }
+
                 $isInAvailableWindow = collect($dayWindows)
                     ->contains(fn (array $window): bool => in_array(
                         $window['availability_type'],
