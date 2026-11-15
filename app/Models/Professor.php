@@ -18,9 +18,17 @@ class Professor extends Model
         'program_id',
         'department_id',
         'employment_type',
+        'weekly_teaching_hours_quota',
         'specialization',
         'status',
     ];
+
+    protected function casts(): array
+    {
+        return [
+            'weekly_teaching_hours_quota' => 'decimal:1',
+        ];
+    }
 
     public function user(): BelongsTo
     {

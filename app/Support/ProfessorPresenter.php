@@ -8,7 +8,7 @@ use App\Models\Professor;
 
 final class ProfessorPresenter
 {
-    public static function toDirectoryArray(Professor $professor): array
+    public static function toDirectoryArray(Professor $professor, ?array $workload = null): array
     {
         $professor->loadMissing(['user:id,name,email,status,created_at', 'program:id,code,name,status']);
 
@@ -24,10 +24,11 @@ final class ProfessorPresenter
             'profile_status' => $professor->status,
             'created_at' => $professor->created_at?->toIso8601String(),
             'program' => self::programArray($professor),
+            'workload' => self::workloadSummary($workload),
         ];
     }
 
-    public static function toDetailArray(Professor $professor): array
+    public static function toDetailArray(Professor $professor, ?array $workload = null): array
     {
         $professor->loadMissing([
             'user:id,name,email,status,created_at',
@@ -41,7 +42,7 @@ final class ProfessorPresenter
         ]);
 
         return [
-            ...self::toDirectoryArray($professor),
+            ...self::toDirectoryArray($professor, $workload),
             'user_created_at' => $professor->user->created_at?->toIso8601String(),
             'availability' => $professor->facultyAvailability
                 ->sortBy(fn (FacultyAvailability $availability): string => sprintf(
@@ -58,6 +59,7 @@ final class ProfessorPresenter
                 ->map(self::assignmentArray(...))
                 ->values()
                 ->all(),
+            'workload' => self::workloadDetail($workload),
         ];
     }
 
@@ -123,6 +125,48 @@ final class ProfessorPresenter
                     'name' => $offering->academicTerm->name,
                 ],
             ],
+        ];
+    }
+
+    private static function workloadSummary(?array $workload): ?array
+    {
+        if ($workload === null) {
+            return null;
+        }
+
+        return [
+            'academic_term' => $workload['academic_term'] ?? null,
+            'term_available' => (bool) ($workload['term_available'] ?? false),
+            'term_resolution' => $workload['term_resolution'] ?? [
+                'status' => 'missing',
+                'message' => 'No current academic term is configured.',
+                'current_terms' => [],
+            ],
+            'weekly_quota' => $workload['weekly_quota'] ?? null,
+            'assigned_hours' => (float) ($workload['assigned_hours'] ?? 0),
+            'scheduled_hours' => (float) ($workload['scheduled_hours'] ?? 0),
+            'remaining_hours' => $workload['remaining_hours'] ?? null,
+            'excess_hours' => $workload['excess_hours'] ?? null,
+            'utilization_percentage' => $workload['utilization_percentage'] ?? null,
+            'status' => $workload['status'] ?? 'not_configured',
+            'calculation_complete' => (bool) ($workload['calculation_complete'] ?? false),
+            'issues_count' => (int) ($workload['issues_count'] ?? 0),
+            'has_discrepancies' => (bool) ($workload['has_discrepancies'] ?? false),
+            'unscheduled_offerings_count' => (int) ($workload['unscheduled_offerings_count'] ?? 0),
+        ];
+    }
+
+    private static function workloadDetail(?array $workload): ?array
+    {
+        if ($workload === null) {
+            return null;
+        }
+
+        return [
+            ...self::workloadSummary($workload),
+            'issues' => $workload['issues'] ?? [],
+            'offerings' => $workload['offerings'] ?? [],
+            'discrepancies' => $workload['discrepancies'] ?? [],
         ];
     }
 

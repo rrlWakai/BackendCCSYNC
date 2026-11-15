@@ -6,11 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Faculty\IndexFacultyRequest;
 use App\Http\Requests\Faculty\StoreFacultyAvailabilityRequest;
 use App\Http\Requests\Faculty\UpdateFacultyAvailabilityRequest;
+use App\Http\Requests\Faculty\UpdateFacultyQuotaRequest;
 use App\Http\Requests\Faculty\UpdateOwnProfessorRequest;
 use App\Models\FacultyAssignment;
 use App\Models\FacultyAvailability;
 use App\Models\Professor;
 use App\Models\Role;
+use App\Services\Faculty\FacultyWorkloadService;
 use App\Support\ApiResponse;
 use App\Support\ProfessorPresenter;
 use Illuminate\Database\Eloquent\Builder;
@@ -24,6 +26,10 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 final class FacultyController extends Controller
 {
+    public function __construct(
+        private readonly FacultyWorkloadService $workload,
+    ) {}
+
     public function index(IndexFacultyRequest $request): JsonResponse
     {
         $filters = $request->validated();
@@ -51,8 +57,16 @@ final class FacultyController extends Controller
             ->orderBy('professors.id')
             ->paginate($filters['per_page'] ?? 25);
 
+        $items = collect($professors->items());
+        $workloads = $this->workload->summariesFor($items);
+
         return ApiResponse::success([
-            'faculty' => collect($professors->items())->map(ProfessorPresenter::toDirectoryArray(...))->all(),
+            'faculty' => $items
+                ->map(fn (Professor $professor): array => ProfessorPresenter::toDirectoryArray(
+                    $professor,
+                    $workloads[$professor->id] ?? null,
+                ))
+                ->all(),
             'pagination' => [
                 'current_page' => $professors->currentPage(),
                 'last_page' => $professors->lastPage(),
@@ -92,10 +106,31 @@ final class FacultyController extends Controller
 
         $professor->update($request->validated());
         $professor = $professor->fresh();
+        $workload = $this->workload->summariesFor([$professor])[$professor->id] ?? null;
 
         return ApiResponse::success(
-            ['professor' => ProfessorPresenter::toDetailArray($professor)],
+            ['professor' => ProfessorPresenter::toDetailArray($professor, $workload)],
             'Professor profile updated.',
+        );
+    }
+
+    public function updateQuota(UpdateFacultyQuotaRequest $request, Professor $professor): JsonResponse
+    {
+        $quota = $request->validated('weekly_teaching_hours_quota');
+
+        DB::transaction(function () use ($professor, $quota): void {
+            $lockedProfessor = Professor::query()->lockForUpdate()->findOrFail($professor->id);
+            $lockedProfessor->update(['weekly_teaching_hours_quota' => $quota]);
+        });
+
+        $professor = $professor->fresh();
+        $workload = $this->workload->summariesFor([$professor])[$professor->id] ?? null;
+
+        return ApiResponse::success(
+            ['professor' => ProfessorPresenter::toDetailArray($professor, $workload)],
+            $quota === null
+                ? 'Weekly teaching-hour quota cleared.'
+                : 'Weekly teaching-hour quota updated.',
         );
     }
 
@@ -271,8 +306,10 @@ final class FacultyController extends Controller
             'facultyAssignments.subjectOffering.academicTerm:id,academic_year,term,name',
         ]);
 
+        $workload = $this->workload->summariesFor([$professor])[$professor->id] ?? null;
+
         return ApiResponse::success(
-            ['professor' => ProfessorPresenter::toDetailArray($professor)],
+            ['professor' => ProfessorPresenter::toDetailArray($professor, $workload)],
             'Faculty profile loaded.',
         );
     }

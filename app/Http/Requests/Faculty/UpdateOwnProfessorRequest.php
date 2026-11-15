@@ -34,6 +34,7 @@ final class UpdateOwnProfessorRequest extends FormRequest
             'program_id' => ['sometimes', 'nullable', 'integer', $programRule],
             'employment_type' => ['sometimes', 'required', Rule::in(['full_time', 'part_time', 'visiting'])],
             'specialization' => ['sometimes', 'nullable', 'string', 'max:160'],
+            'weekly_teaching_hours_quota' => ['prohibited'],
             'status' => ['prohibited'],
             'role' => ['prohibited'],
             'email' => ['prohibited'],

@@ -32,6 +32,12 @@ final class ProfessorPolicy
             && $professor->user_id === $actor->id;
     }
 
+    public function manageQuota(User $actor, Professor $professor): bool
+    {
+        return $actor->isActive()
+            && $actor->hasRole(Role::ADMINISTRATOR);
+    }
+
     public function manageAvailability(User $actor, Professor $professor): bool
     {
         if (! $actor->isActive()) {

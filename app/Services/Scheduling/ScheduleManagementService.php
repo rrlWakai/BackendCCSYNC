@@ -96,17 +96,7 @@ final class ScheduleManagementService
             $this->assertOfferingSchedulable($offering);
             $professor = Professor::query()->lockForUpdate()->with('user')->findOrFail($attributes['professor_id']);
             $this->assertProfessorActive($professor);
-
-            if ($attributes['assignment_role'] === 'lead' && FacultyAssignment::query()
-                ->where('subject_offering_id', $offering->id)
-                ->where('assignment_role', 'lead')
-                ->where('status', 'active')
-                ->where('professor_id', '<>', $professor->id)
-                ->exists()) {
-                throw ValidationException::withMessages([
-                    'assignment_role' => 'This offering already has an active lead instructor.',
-                ]);
-            }
+            $this->assertSingleProfessorAssignment($offering->id, 'professor_id', $professor->id);
 
             $assignment = FacultyAssignment::query()
                 ->where('professor_id', $professor->id)
@@ -144,6 +134,15 @@ final class ScheduleManagementService
             $this->lockOffering($assignment->subject_offering_id);
             $lockedAssignment = FacultyAssignment::query()->lockForUpdate()->findOrFail($assignment->id);
 
+            if ($status === 'active') {
+                $this->assertSingleProfessorAssignment(
+                    $lockedAssignment->subject_offering_id,
+                    'status',
+                    $lockedAssignment->professor_id,
+                    $lockedAssignment->id,
+                );
+            }
+
             if ($status !== 'active' && $lockedAssignment->scheduleAssignments()
                 ->where('status', 'active')
                 ->whereHas('classSchedule', fn (Builder $query) => $query->where('status', 'published'))
@@ -167,6 +166,7 @@ final class ScheduleManagementService
         return DB::transaction(function () use ($schedule, $facultyAssignmentId, $primary): ScheduleAssignment {
             $lockedSchedule = $this->lockSchedule($schedule->id);
             $this->assertDraft($lockedSchedule);
+            $this->lockOffering($lockedSchedule->subject_offering_id);
             $facultyAssignment = FacultyAssignment::query()
                 ->with('professor.user')
                 ->lockForUpdate()
@@ -184,6 +184,11 @@ final class ScheduleManagementService
                 ]);
             }
             $this->assertProfessorActive($facultyAssignment->professor);
+            $this->assertSingleProfessorAssignment(
+                $lockedSchedule->subject_offering_id,
+                'faculty_assignment_id',
+                $facultyAssignment->professor_id,
+            );
 
             if ($primary) {
                 $lockedSchedule->scheduleAssignments()
@@ -559,6 +564,7 @@ final class ScheduleManagementService
             'scheduleAssignments.facultyAssignment.professor.user',
             'roomAllocations.room',
         ]);
+        $this->assertSingleProfessorAssignment($offering->id, 'assignments');
         $assignments = $schedule->scheduleAssignments
             ->where('status', 'active')
             ->filter(fn (ScheduleAssignment $assignment): bool => $assignment->facultyAssignment?->status === 'active');
@@ -605,6 +611,34 @@ final class ScheduleManagementService
         if ($professor->status !== 'active' || $professor->user->status !== 'active') {
             throw ValidationException::withMessages([
                 'professor_id' => 'The professor profile and user account must both be active.',
+            ]);
+        }
+    }
+
+    private function assertSingleProfessorAssignment(
+        int $offeringId,
+        string $field,
+        ?int $expectedProfessorId = null,
+        ?int $ignoreAssignmentId = null,
+    ): void {
+        $professorIds = FacultyAssignment::query()
+            ->where('subject_offering_id', $offeringId)
+            ->where('status', 'active')
+            ->when($ignoreAssignmentId !== null, fn (Builder $query) => $query->whereKeyNot($ignoreAssignmentId))
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->pluck('professor_id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values();
+
+        $hasConflict = $expectedProfessorId === null
+            ? $professorIds->count() > 1
+            : $professorIds->contains(fn (int $professorId): bool => $professorId !== $expectedProfessorId);
+
+        if ($hasConflict) {
+            throw ValidationException::withMessages([
+                $field => 'A subject offering can only have one distinct active professor across all assignment roles. Resolve the existing assignment conflict before continuing.',
             ]);
         }
     }

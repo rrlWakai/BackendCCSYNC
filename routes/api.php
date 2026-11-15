@@ -165,6 +165,9 @@ Route::prefix('v1')
                 Route::middleware('role:professor')
                     ->get('/me/availability', [FacultyController::class, 'availabilityForCurrentUser'])
                     ->name('me.availability');
+                Route::middleware('role:administrator')
+                    ->patch('/{professor}/quota', [FacultyController::class, 'updateQuota'])
+                    ->name('quota.update');
                 Route::get('/{professor}/assignments', [FacultyController::class, 'assignments'])
                     ->name('assignments');
                 Route::get('/{professor}/availability', [FacultyController::class, 'availability'])
