@@ -25,6 +25,15 @@ trait ValidatesAnnouncementPayload
             $this->merge(['summary' => $summary === '' ? null : $summary]);
         }
 
+        if ($this->exists('activity_id')) {
+            $activityId = $this->input('activity_id');
+            if ($activityId === '' || $activityId === 'null') {
+                $this->merge(['activity_id' => null]);
+            } elseif (is_numeric($activityId)) {
+                $this->merge(['activity_id' => (int) $activityId]);
+            }
+        }
+
         $this->normalizeAnnouncementSchedule('published_at');
         $this->normalizeAnnouncementSchedule('expires_at');
     }
@@ -103,6 +112,7 @@ trait ValidatesAnnouncementPayload
         return [
             'title' => [...$required, 'string', 'max:160'],
             'summary' => ['sometimes', 'nullable', 'string', 'max:300'],
+            'activity_id' => ['sometimes', 'nullable', 'integer', 'exists:activities,id'],
             'content' => [...$required, 'string', 'max:20000'],
             'category' => [...$required, Rule::in(Announcement::CATEGORIES)],
             'priority' => ['sometimes', 'required', Rule::in(Announcement::PRIORITIES)],

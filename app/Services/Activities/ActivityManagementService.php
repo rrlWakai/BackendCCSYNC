@@ -254,6 +254,7 @@ final class ActivityManagementService
             'room:id,code,name,building,floor',
             'cancelledBy:id,name',
             'completedBy:id,name',
+            'announcements:id,activity_id,title,status,published_at,expires_at,archived_at',
             'targets.role:id,code,name',
             'targets.program:id,code,name',
             'targets.yearLevel:id,level,name',

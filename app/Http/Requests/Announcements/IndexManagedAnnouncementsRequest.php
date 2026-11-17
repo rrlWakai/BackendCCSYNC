@@ -15,6 +15,8 @@ final class IndexManagedAnnouncementsRequest extends ApiFormRequest
             'status' => ['sometimes', 'nullable', Rule::in(Announcement::STATUSES)],
             'category' => ['sometimes', 'nullable', Rule::in(Announcement::CATEGORIES)],
             'priority' => ['sometimes', 'nullable', Rule::in(Announcement::PRIORITIES)],
+            'activity_id' => ['sometimes', 'nullable', 'integer', 'exists:activities,id'],
+            'link_type' => ['sometimes', 'nullable', Rule::in(['linked', 'general'])],
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
         ];

@@ -40,6 +40,7 @@ class Announcement extends Model
 
     protected $fillable = [
         'author_user_id',
+        'activity_id',
         'title',
         'summary',
         'content',
@@ -64,6 +65,11 @@ class Announcement extends Model
     public function author(): BelongsTo
     {
         return $this->belongsTo(User::class, 'author_user_id');
+    }
+
+    public function activity(): BelongsTo
+    {
+        return $this->belongsTo(Activity::class);
     }
 
     public function targets(): HasMany

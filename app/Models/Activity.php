@@ -93,6 +93,11 @@ class Activity extends Model
         return $this->hasMany(ActivityTarget::class);
     }
 
+    public function announcements(): HasMany
+    {
+        return $this->hasMany(Announcement::class);
+    }
+
     public function history(): HasMany
     {
         return $this->hasMany(ActivityHistory::class);

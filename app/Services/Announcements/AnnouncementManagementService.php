@@ -2,6 +2,7 @@
 
 namespace App\Services\Announcements;
 
+use App\Models\Activity;
 use App\Models\Announcement;
 use App\Models\AnnouncementHistory;
 use App\Models\AnnouncementTarget;
@@ -108,6 +109,7 @@ final class AnnouncementManagementService
         unset($attributes['targets']);
 
         AnnouncementAudience::assertValidTargets($actor, $scope, $targets);
+        $this->assertLinkableActivity($attributes, $actor);
 
         return DB::transaction(function () use ($attributes, $actor, $scope, $targets): Announcement {
             $announcement = Announcement::create([
@@ -161,6 +163,7 @@ final class AnnouncementManagementService
             }
 
             AnnouncementAudience::assertValidTargets($actor, $scope, $targets);
+            $this->assertLinkableActivity($attributes, $actor);
 
             $nextPublishedAt = array_key_exists('published_at', $attributes)
                 ? $attributes['published_at']
@@ -272,12 +275,32 @@ final class AnnouncementManagementService
     }
 
     /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function assertLinkableActivity(array $attributes, User $actor): void
+    {
+        $activityId = $attributes['activity_id'] ?? null;
+        if ($activityId === null || $activityId === '') {
+            return;
+        }
+
+        $activity = Activity::query()->findOrFail((int) $activityId);
+
+        if (! $actor->can('view', $activity) || ! $actor->can('update', $activity)) {
+            throw ValidationException::withMessages([
+                'activity_id' => 'You cannot link this announcement to that activity.',
+            ]);
+        }
+    }
+
+    /**
      * @return list<string>
      */
     private function relations(): array
     {
         return [
             'author:id,name',
+            'activity:id,title,category,status,starts_at,ends_at',
             'targets.role:id,code,name',
             'targets.program:id,code,name',
             'targets.yearLevel:id,level,name',
@@ -316,6 +339,16 @@ final class AnnouncementManagementService
 
         if (! empty($filters['priority'])) {
             $query->where('priority', $filters['priority']);
+        }
+
+        if (! empty($filters['activity_id'])) {
+            $query->where('activity_id', $filters['activity_id']);
+        }
+
+        if (($filters['link_type'] ?? null) === 'linked') {
+            $query->whereNotNull('activity_id');
+        } elseif (($filters['link_type'] ?? null) === 'general') {
+            $query->whereNull('activity_id');
         }
     }
 
@@ -390,6 +423,7 @@ final class AnnouncementManagementService
         return [
             'title' => $announcement->title,
             'summary' => $announcement->summary,
+            'activity_id' => $announcement->activity_id,
             'content' => $announcement->content,
             'category' => $announcement->category,
             'priority' => $announcement->priority,

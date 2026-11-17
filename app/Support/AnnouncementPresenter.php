@@ -21,6 +21,7 @@ final class AnnouncementPresenter
     {
         $announcement->loadMissing([
             'author:id,name',
+            'activity:id,title,category,status,starts_at,ends_at',
             'targets.role:id,code,name',
             'targets.program:id,code,name',
             'targets.yearLevel:id,level,name',
@@ -48,6 +49,15 @@ final class AnnouncementPresenter
             'author' => [
                 'id' => $announcement->author->id,
                 'name' => $announcement->author->name,
+            ],
+            'activity_id' => $announcement->activity_id,
+            'activity' => $announcement->activity === null ? null : [
+                'id' => $announcement->activity->id,
+                'title' => $announcement->activity->title,
+                'category' => $announcement->activity->category,
+                'status' => $announcement->activity->status,
+                'starts_at' => self::toApiTime($announcement->activity->starts_at),
+                'ends_at' => self::toApiTime($announcement->activity->ends_at),
             ],
             'audience_summary' => self::audienceSummary($announcement),
             'targets' => [

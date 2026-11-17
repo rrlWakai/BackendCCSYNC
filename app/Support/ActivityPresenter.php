@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\Activity;
 use App\Models\ActivityHistory;
+use App\Models\Announcement;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 
@@ -63,6 +64,18 @@ final class ActivityPresenter
         ];
 
         if ($includeTargets) {
+            $activity->loadMissing('announcements:id,activity_id,title,status,published_at,expires_at,archived_at');
+            $data['announcements'] = $activity->announcements
+                ->map(fn (Announcement $announcement): array => [
+                    'id' => $announcement->id,
+                    'title' => $announcement->title,
+                    'status' => $announcement->status,
+                    'publication_state' => AnnouncementPresenter::publicationState($announcement),
+                    'published_at' => self::utc($announcement->published_at),
+                ])
+                ->values()
+                ->all();
+
             $data['targets'] = [
                 'role_ids' => $activity->targets->whereNotNull('role_id')->pluck('role_id')->map(fn ($id): int => (int) $id)->values()->all(),
                 'program_ids' => $activity->targets->whereNotNull('program_id')->pluck('program_id')->map(fn ($id): int => (int) $id)->values()->all(),
