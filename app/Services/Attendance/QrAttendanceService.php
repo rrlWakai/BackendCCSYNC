@@ -27,10 +27,11 @@ final class QrAttendanceService
             ->first();
 
         return [
-            'active' => $session->qrIsActive() && $session->status === 'open',
+            'active' => $session->qrIsActive(),
             'opened_at' => $session->qr_opened_at?->toIso8601String(),
             'closed_at' => $session->qr_closed_at?->toIso8601String(),
             'expires_at' => $latestToken?->expires_at?->toIso8601String(),
+            'deadline_at' => AttendanceClock::lateAt($session)->toIso8601String(),
             'token_ttl_seconds' => $this->tokenTtl(),
             'monitoring' => $this->monitoring($session),
         ];
@@ -47,6 +48,12 @@ final class QrAttendanceService
             $this->assertQrUsable($lockedSession);
 
             $now = CarbonImmutable::now();
+            $deadline = AttendanceClock::lateAt($lockedSession);
+            if ($now->greaterThan($deadline)) {
+                throw ValidationException::withMessages([
+                    'session' => 'The QR attendance deadline has passed.',
+                ]);
+            }
             $reopening = ! $lockedSession->qrIsActive();
 
             AttendanceQrToken::query()
@@ -59,7 +66,7 @@ final class QrAttendanceService
             AttendanceQrToken::create([
                 'attendance_session_id' => $lockedSession->id,
                 'token_hash' => hash('sha256', $token),
-                'expires_at' => $now->addSeconds($this->tokenTtl()),
+                'expires_at' => $now->addSeconds($this->tokenTtl())->min($deadline),
                 'created_by_user_id' => $actor->id,
             ]);
 
@@ -105,8 +112,10 @@ final class QrAttendanceService
 
     public function checkIn(string $token, User $studentUser): array
     {
+        $alreadyRecorded = false;
+
         try {
-            $record = DB::transaction(function () use ($token, $studentUser): StudentAttendance {
+            $record = DB::transaction(function () use ($token, $studentUser, &$alreadyRecorded): StudentAttendance {
                 $tokenHash = hash('sha256', $token);
                 $qrToken = AttendanceQrToken::query()
                     ->where('token_hash', $tokenHash)
@@ -120,6 +129,8 @@ final class QrAttendanceService
                     ->lockForUpdate()
                     ->findOrFail($qrToken->attendance_session_id);
                 $session->load('classSchedule.subjectOffering');
+                $now = CarbonImmutable::now();
+                $deadline = AttendanceClock::lateAt($session);
 
                 $qrToken = AttendanceQrToken::query()
                     ->whereKey($qrToken->id)
@@ -150,11 +161,15 @@ final class QrAttendanceService
                     throw QrAttendanceException::sessionClosed();
                 }
 
+                if ($now->greaterThan($deadline)) {
+                    throw QrAttendanceException::sessionClosed();
+                }
+
                 if ($qrToken->revoked_at !== null) {
                     throw QrAttendanceException::invalidToken();
                 }
 
-                if ($qrToken->expires_at === null || $qrToken->expires_at->lte(CarbonImmutable::now())) {
+                if ($qrToken->expires_at === null || $qrToken->expires_at->lt($now)) {
                     throw QrAttendanceException::expiredToken();
                 }
 
@@ -177,10 +192,17 @@ final class QrAttendanceService
                     ->first();
 
                 if ($existing !== null) {
-                    throw QrAttendanceException::alreadyRecorded();
-                }
+                    $alreadyRecorded = true;
 
-                $now = CarbonImmutable::now();
+                    return $existing->load([
+                        'enrollment.student.user:id,name,status',
+                        'attendanceSession.classSchedule.subjectOffering.subject',
+                        'attendanceSession.classSchedule.subjectOffering.section.program',
+                        'attendanceSession.classSchedule.subjectOffering.academicTerm',
+                        'attendanceSession.classSchedule.scheduleAssignments.facultyAssignment.professor.user',
+                        'changes.changedBy:id,name',
+                    ]);
+                }
 
                 $record = StudentAttendance::create([
                     'attendance_session_id' => $session->id,
@@ -208,6 +230,7 @@ final class QrAttendanceService
         return [
             'attendance' => AttendancePresenter::record($record),
             'session' => AttendancePresenter::session($record->attendanceSession),
+            'already_recorded' => $alreadyRecorded,
         ];
     }
 
@@ -221,12 +244,15 @@ final class QrAttendanceService
         $records = StudentAttendance::query()
             ->where('attendance_session_id', $session->id)
             ->whereIn('student_subject_enrollment_id', $enrollments->pluck('id'))
-            ->whereIn('status', ['present', 'late'])
             ->get()
             ->keyBy('student_subject_enrollment_id');
 
+        $present = $records->where('status', 'present')->count();
+        $late = $records->where('status', 'late')->count();
+        $absent = $records->where('status', 'absent')->count();
+        $excused = $records->where('status', 'excused')->count();
         $checkedIn = $enrollments->filter(
-            fn ($enrollment): bool => $records->has($enrollment->id),
+            fn ($enrollment): bool => in_array($records->get($enrollment->id)?->status, ['present', 'late'], true),
         );
         $total = $enrollments->count();
         $checkedCount = $checkedIn->count();
@@ -234,6 +260,10 @@ final class QrAttendanceService
         return [
             'total_enrolled' => $total,
             'checked_in' => $checkedCount,
+            'present' => $present,
+            'late' => $late,
+            'absent' => $absent,
+            'excused' => $excused,
             'not_checked_in' => max(0, $total - $checkedCount),
             'percentage' => $total > 0 ? round(($checkedCount / $total) * 100, 1) : 0.0,
             'checked_in_students' => $checkedIn->map(function ($enrollment) use ($records): array {
@@ -273,6 +303,13 @@ final class QrAttendanceService
         if ($session->classSchedule->status !== 'published') {
             throw ValidationException::withMessages([
                 'session' => 'QR attendance requires a published class schedule.',
+            ]);
+        }
+
+        if (CarbonImmutable::now()->greaterThan(AttendanceClock::lateAt($session))
+            || CarbonImmutable::now()->greaterThanOrEqualTo(AttendanceClock::classEnd($session))) {
+            throw ValidationException::withMessages([
+                'session' => 'QR attendance is outside the scheduled scanning window.',
             ]);
         }
     }

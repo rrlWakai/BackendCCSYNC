@@ -101,6 +101,11 @@ final class AttendanceManagementService
                 ]);
             }
 
+            if ($lockedSession->status === 'open'
+                && CarbonImmutable::now()->greaterThanOrEqualTo(AttendanceClock::classEnd($lockedSession))) {
+                $this->finalizeLockedSession($lockedSession, CarbonImmutable::now());
+            }
+
             $offeringId = $lockedSession->classSchedule->subject_offering_id;
             $eligibleIds = $this->eligibleEnrollments($lockedSession)
                 ->pluck('student_subject_enrollments.id')
@@ -145,9 +150,10 @@ final class AttendanceManagementService
                     ? $attributes['remarks']
                     : $attendance?->remarks;
 
-                if ($attributes['status'] === 'excused' && trim((string) $remarks) === '') {
+                if ($attributes['status'] === 'excused'
+                    && ($attendance?->status !== 'excused' || trim((string) $remarks) === '')) {
                     throw ValidationException::withMessages([
-                        "records.{$index}.remarks" => 'An explanation is required for excused attendance.',
+                        "records.{$index}.status" => 'Excused attendance can only be applied through an approved excuse request.',
                     ]);
                 }
 
@@ -214,51 +220,81 @@ final class AttendanceManagementService
                 ->lockForUpdate()
                 ->findOrFail($session->id);
 
-            if ($status === 'submitted') {
-                if ($lockedSession->status !== 'open') {
-                    throw ValidationException::withMessages([
-                        'status' => 'Only open attendance sessions can be submitted.',
-                    ]);
-                }
-
-                $lockedSession->load('classSchedule.subjectOffering');
-                $eligibleIds = $this->eligibleEnrollments($lockedSession)
-                    ->pluck('student_subject_enrollments.id')
-                    ->map(fn ($id): int => (int) $id);
-                $recordedIds = $lockedSession->records()
-                    ->whereIn('student_subject_enrollment_id', $eligibleIds)
-                    ->pluck('student_subject_enrollment_id')
-                    ->map(fn ($id): int => (int) $id);
-
-                if ($eligibleIds->isEmpty() || $eligibleIds->diff($recordedIds)->isNotEmpty()) {
-                    throw ValidationException::withMessages([
-                        'status' => 'Record attendance for every eligible student before submitting this session.',
-                    ]);
-                }
-
-                $lockedSession->update([
-                    'status' => 'submitted',
-                    'submitted_at' => now(),
+            if ($status !== 'cancelled') {
+                throw ValidationException::withMessages([
+                    'status' => 'Attendance sessions are finalized automatically at scheduled class end.',
                 ]);
-                $this->closeQrPeriod($lockedSession);
-            } else {
-                if ($lockedSession->status === 'cancelled') {
-                    throw ValidationException::withMessages([
-                        'status' => 'This attendance session is already cancelled.',
-                    ]);
-                }
-
-                $lockedSession->update([
-                    'status' => 'cancelled',
-                    'cancelled_by_user_id' => $actor->id,
-                    'cancelled_at' => now(),
-                    'cancellation_reason' => trim((string) $cancellationReason),
-                ]);
-                $this->closeQrPeriod($lockedSession);
             }
+
+            if ($lockedSession->status === 'cancelled') {
+                throw ValidationException::withMessages([
+                    'status' => 'This attendance session is already cancelled.',
+                ]);
+            }
+            if ($lockedSession->status !== 'open'
+                || CarbonImmutable::now()->greaterThanOrEqualTo(AttendanceClock::classEnd($lockedSession))) {
+                throw ValidationException::withMessages([
+                    'status' => 'A finalized meeting cannot be cancelled.',
+                ]);
+            }
+
+            $lockedSession->update([
+                'status' => 'cancelled',
+                'cancelled_by_user_id' => $actor->id,
+                'cancelled_at' => now(),
+                'cancellation_reason' => trim((string) $cancellationReason),
+            ]);
+            $this->closeQrPeriod($lockedSession);
 
             return $lockedSession->fresh();
         }, attempts: 3);
+    }
+
+    public function processDueSessions(): int
+    {
+        $candidates = AttendanceSession::query()
+            ->where('status', 'open')
+            ->whereDate('class_date', '<=', AttendanceClock::today()->toDateString())
+            ->with('classSchedule')
+            ->orderBy('id')
+            ->get();
+
+        $processed = 0;
+        foreach ($candidates as $candidate) {
+            $candidateNow = CarbonImmutable::now();
+            if ($candidateNow->lessThanOrEqualTo(AttendanceClock::lateAt($candidate))
+                && $candidateNow->lessThan(AttendanceClock::classEnd($candidate))) {
+                continue;
+            }
+
+            $didProcess = DB::transaction(function () use ($candidate): bool {
+                $session = AttendanceSession::query()
+                    ->lockForUpdate()
+                    ->find($candidate->id);
+
+                if ($session === null || $session->status !== 'open') {
+                    return false;
+                }
+
+                $session->load('classSchedule.subjectOffering');
+                $now = CarbonImmutable::now();
+
+                if ($now->greaterThan(AttendanceClock::lateAt($session))) {
+                    $this->closeQrPeriod($session, AttendanceClock::lateAt($session));
+                    $this->recordMissingAsAbsent($session);
+                }
+
+                if ($now->greaterThanOrEqualTo(AttendanceClock::classEnd($session))) {
+                    $this->finalizeLockedSession($session, $now);
+                }
+
+                return true;
+            }, attempts: 3);
+
+            $processed += $didProcess ? 1 : 0;
+        }
+
+        return $processed;
     }
 
     private function assertScheduleUsable(ClassSchedule $schedule, User $actor): void
@@ -284,13 +320,58 @@ final class AttendanceManagementService
         }
     }
 
-    private function closeQrPeriod(AttendanceSession $session): void
+    private function finalizeLockedSession(AttendanceSession $session, CarbonImmutable $now): void
+    {
+        if ($session->status !== 'open') {
+            return;
+        }
+
+        if ($now->greaterThan(AttendanceClock::lateAt($session))) {
+            $this->closeQrPeriod($session, AttendanceClock::lateAt($session));
+            $this->recordMissingAsAbsent($session);
+        }
+
+        $session->update([
+            'status' => 'submitted',
+            'submitted_at' => $now,
+        ]);
+    }
+
+    private function recordMissingAsAbsent(AttendanceSession $session): void
+    {
+        $eligible = $this->eligibleEnrollments($session)->get(['student_subject_enrollments.id']);
+        $recordedIds = $session->records()
+            ->whereIn('student_subject_enrollment_id', $eligible->pluck('id'))
+            ->pluck('student_subject_enrollment_id')
+            ->flip();
+
+        foreach ($eligible as $enrollment) {
+            if ($recordedIds->has($enrollment->id)) {
+                continue;
+            }
+
+            StudentAttendance::create([
+                'attendance_session_id' => $session->id,
+                'student_subject_enrollment_id' => $enrollment->id,
+                'status' => 'absent',
+                'check_in_at' => null,
+                'remarks' => null,
+                'submission_source' => StudentAttendance::SOURCE_SYSTEM,
+            ]);
+        }
+    }
+
+    private function closeQrPeriod(AttendanceSession $session, ?CarbonImmutable $closedAt = null): void
     {
         if ($session->qr_opened_at === null) {
             return;
         }
 
-        $closedAt = now();
+        $closedAt ??= CarbonImmutable::now();
+
+        if ($session->qr_closed_at !== null && $session->qr_closed_at->lessThanOrEqualTo($closedAt)) {
+            return;
+        }
 
         $session->forceFill(['qr_closed_at' => $closedAt])->save();
 
@@ -313,13 +394,23 @@ final class AttendanceManagementService
             ->whereIn('student_subject_enrollments.status', ['enrolled', 'dropped', 'withdrawn'])
             ->where('student_subject_enrollments.enrolled_at', '<=', $classStartUtc)
             ->where(function (Builder $query) use ($classStartUtc): void {
-                $query->whereNull('student_subject_enrollments.dropped_at')
-                    ->orWhere('student_subject_enrollments.dropped_at', '>', $classStartUtc);
+                $query->where(function (Builder $active) use ($classStartUtc): void {
+                    $active->where('student_subject_enrollments.status', 'enrolled')
+                        ->where(function (Builder $date) use ($classStartUtc): void {
+                            $date->whereNull('student_subject_enrollments.dropped_at')
+                                ->orWhere('student_subject_enrollments.dropped_at', '>', $classStartUtc);
+                        });
+                })->orWhere(function (Builder $dropped) use ($classStartUtc): void {
+                    $dropped->where('student_subject_enrollments.status', 'dropped')
+                        ->whereNotNull('student_subject_enrollments.dropped_at')
+                        ->where('student_subject_enrollments.dropped_at', '>', $classStartUtc);
+                })->orWhere(function (Builder $withdrawn) use ($classStartUtc): void {
+                    $withdrawn->where('student_subject_enrollments.status', 'withdrawn')
+                        ->whereNotNull('student_subject_enrollments.withdrawn_at')
+                        ->where('student_subject_enrollments.withdrawn_at', '>', $classStartUtc);
+                });
             })
-            ->where('students.status', 'active')
-            ->whereHas('student.user', fn (Builder $query) => $query
-                ->where('status', 'active')
-                ->whereHas('role', fn (Builder $roleQuery) => $roleQuery->where('code', Role::STUDENT)));
+            ->whereHas('student.user.role', fn (Builder $roleQuery) => $roleQuery->where('code', Role::STUDENT));
     }
 
     private function timeValue(?string $value): ?string

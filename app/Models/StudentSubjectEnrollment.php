@@ -17,6 +17,7 @@ class StudentSubjectEnrollment extends Model
         'status',
         'enrolled_at',
         'dropped_at',
+        'withdrawn_at',
     ];
 
     protected function casts(): array
@@ -24,6 +25,7 @@ class StudentSubjectEnrollment extends Model
         return [
             'enrolled_at' => 'datetime',
             'dropped_at' => 'datetime',
+            'withdrawn_at' => 'datetime',
         ];
     }
 
@@ -40,5 +42,10 @@ class StudentSubjectEnrollment extends Model
     public function attendanceRecords(): HasMany
     {
         return $this->hasMany(StudentAttendance::class, 'student_subject_enrollment_id');
+    }
+
+    public function attendanceExcuseRequests(): HasMany
+    {
+        return $this->hasMany(AttendanceExcuseRequest::class, 'student_subject_enrollment_id');
     }
 }

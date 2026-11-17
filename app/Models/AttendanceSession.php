@@ -60,8 +60,16 @@ class AttendanceSession extends Model
         return $this->hasMany(AttendanceQrToken::class);
     }
 
+    public function excuseRequests(): HasMany
+    {
+        return $this->hasMany(AttendanceExcuseRequest::class);
+    }
+
     public function qrIsActive(): bool
     {
-        return $this->qr_opened_at !== null && $this->qr_closed_at === null;
+        return $this->qr_opened_at !== null
+            && $this->qr_closed_at === null
+            && $this->status === 'open'
+            && now()->lessThanOrEqualTo(\App\Support\AttendanceClock::lateAt($this));
     }
 }

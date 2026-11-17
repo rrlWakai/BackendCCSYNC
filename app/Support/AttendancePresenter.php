@@ -32,6 +32,13 @@ final class AttendancePresenter
                 'start_time' => substr((string) $schedule->start_time, 0, 5),
                 'end_time' => substr((string) $schedule->end_time, 0, 5),
                 'status' => $schedule->status,
+                'rooms' => $schedule->roomAllocations
+                    ->where('status', 'active')
+                    ->map(fn ($allocation): array => [
+                        'id' => $allocation->room->id,
+                        'code' => $allocation->room->code,
+                        'name' => $allocation->room->name,
+                    ])->values()->all(),
             ],
             'offering' => [
                 'id' => $offering->id,

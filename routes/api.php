@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\AcademicTermController;
 use App\Http\Controllers\Api\V1\ActivityController;
 use App\Http\Controllers\Api\V1\AnnouncementController;
 use App\Http\Controllers\Api\V1\AttendanceController;
+use App\Http\Controllers\Api\V1\AttendanceWorkflowController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\FacultyController;
 use App\Http\Controllers\Api\V1\HealthController;
@@ -225,6 +226,30 @@ Route::prefix('v1')
             ->name('attendance.')
             ->middleware(['auth:sanctum', 'active'])
             ->group(function (): void {
+                Route::middleware('role:administrator')
+                    ->get('/policies', [AttendanceWorkflowController::class, 'policies'])
+                    ->name('policies.index');
+                Route::middleware('role:administrator')
+                    ->post('/policies', [AttendanceWorkflowController::class, 'storePolicy'])
+                    ->name('policies.store');
+                Route::middleware('role:administrator,department_personnel,professor,student')
+                    ->get('/offerings/{offering}/ledger', [AttendanceWorkflowController::class, 'ledger'])
+                    ->name('offerings.ledger');
+                Route::middleware('role:professor')
+                    ->get('/offerings/{offering}/ledger/export', [AttendanceWorkflowController::class, 'exportLedger'])
+                    ->name('offerings.ledger.export');
+                Route::middleware('role:student')
+                    ->get('/excuses/me', [AttendanceWorkflowController::class, 'myExcuses'])
+                    ->name('excuses.me');
+                Route::middleware('role:student')
+                    ->post('/sessions/{session}/excuses', [AttendanceWorkflowController::class, 'requestExcuse'])
+                    ->name('sessions.excuses.store');
+                Route::middleware('role:professor')
+                    ->get('/offerings/{offering}/excuses', [AttendanceWorkflowController::class, 'offeringExcuses'])
+                    ->name('offerings.excuses');
+                Route::middleware('role:professor')
+                    ->patch('/excuses/{excuse}/decision', [AttendanceWorkflowController::class, 'decideExcuse'])
+                    ->name('excuses.decision');
                 Route::middleware('role:administrator,department_personnel')
                     ->get('/options', [AttendanceController::class, 'options'])
                     ->name('options');
@@ -258,6 +283,9 @@ Route::prefix('v1')
                 Route::middleware(['role:student', 'throttle:attendance-qr-scan'])
                     ->post('/qr/check-in', [AttendanceController::class, 'checkIn'])
                     ->name('qr.check-in');
+                Route::middleware('role:student')
+                    ->get('/sessions/eligible/me', [AttendanceController::class, 'eligibleSessions'])
+                    ->name('sessions.eligible.me');
                 Route::middleware('role:student')
                     ->get('/records/me', [AttendanceController::class, 'ownRecords'])
                     ->name('records.me');

@@ -15,6 +15,8 @@ class StudentAttendance extends Model
 
     public const SOURCE_QR = 'qr';
 
+    public const SOURCE_SYSTEM = 'system';
+
     protected $table = 'student_attendance';
 
     protected $fillable = [

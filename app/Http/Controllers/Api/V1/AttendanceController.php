@@ -22,6 +22,7 @@ use App\Models\Subject;
 use App\Models\SubjectOffering;
 use App\Models\User;
 use App\Services\Attendance\AttendanceManagementService;
+use App\Services\Attendance\AttendanceLedgerService;
 use App\Services\Attendance\QrAttendanceService;
 use App\Support\ApiResponse;
 use App\Support\AttendancePresenter;
@@ -37,6 +38,7 @@ final class AttendanceController extends Controller
     public function __construct(
         private readonly AttendanceManagementService $attendance,
         private readonly QrAttendanceService $qrAttendance,
+        private readonly AttendanceLedgerService $attendanceLedger,
     ) {}
 
     public function options(Request $request): JsonResponse
@@ -182,6 +184,42 @@ final class AttendanceController extends Controller
         return ApiResponse::success($result, 'Attendance recorded.');
     }
 
+    public function eligibleSessions(Request $request): JsonResponse
+    {
+        $studentId = $request->user()->student->id;
+        $sessions = AttendanceSession::query()
+            ->whereDate('class_date', AttendanceClock::today()->toDateString())
+            ->whereIn('status', ['open', 'submitted'])
+            ->whereHas('classSchedule', fn (Builder $schedule) => $schedule
+                ->where('status', 'published')
+                ->whereHas('subjectOffering.enrollments', fn (Builder $enrollment) => $enrollment
+                    ->where('student_id', $studentId)))
+            ->with(self::sessionRelations())
+            ->orderBy('class_date')
+            ->get()
+            ->map(function (AttendanceSession $session) use ($studentId): ?array {
+                $enrollmentId = $this->attendance
+                    ->eligibleEnrollmentForStudent($session, $studentId)?->id;
+                if ($enrollmentId === null) {
+                    return null;
+                }
+
+                return [
+                    'session' => AttendancePresenter::session($session),
+                    'qr_active' => $session->qrIsActive(),
+                    'attendance' => $session->records()
+                        ->where('student_subject_enrollment_id', $enrollmentId)
+                        ->first()
+                        ?->only(['status', 'check_in_at']),
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        return ApiResponse::success(['sessions' => $sessions], 'Your eligible attendance sessions loaded.');
+    }
+
     public function show(Request $request, AttendanceSession $session): JsonResponse
     {
         Gate::authorize('view', $session);
@@ -322,58 +360,71 @@ final class AttendanceController extends Controller
     public function ownSummary(IndexOwnAttendanceRequest $request): JsonResponse
     {
         $studentId = $request->user()->student->id;
-        $query = StudentAttendance::query()
-            ->whereHas('enrollment', fn (Builder $enrollment) => $enrollment->where('student_id', $studentId));
-        $this->applyOwnAttendanceFilters($query, $request->validated());
-        $query->whereHas('attendanceSession', fn (Builder $session) => $session->where('status', '<>', 'cancelled'));
-        $studentOfferingQuery = fn (Builder $offering) => $offering
-            ->whereHas('enrollments', fn (Builder $enrollment) => $enrollment->where('student_id', $studentId))
-            ->whereHas('classSchedules.attendanceSessions.records.enrollment', fn (Builder $enrollment) => $enrollment
-                ->where('student_id', $studentId));
+        $filters = $request->validated();
+        $offeringsQuery = SubjectOffering::query()
+            ->whereHas('enrollments', fn (Builder $enrollment) => $enrollment->where('student_id', $studentId));
+        if (isset($filters['academic_term_id'])) {
+            $offeringsQuery->where('academic_term_id', $filters['academic_term_id']);
+        }
+        if (isset($filters['subject_offering_id'])) {
+            $offeringsQuery->whereKey($filters['subject_offering_id']);
+        }
         $terms = AcademicTerm::query()
-            ->whereHas('subjectOfferings', $studentOfferingQuery)
+            ->whereHas('subjectOfferings.enrollments', fn (Builder $enrollment) =>
+                $enrollment->where('student_id', $studentId))
             ->orderByDesc('starts_on')
             ->get(['id', 'academic_year', 'term', 'name']);
-        $offerings = SubjectOffering::query()
-            ->where($studentOfferingQuery)
+        $offerings = $offeringsQuery
             ->with(['subject:id,code,title', 'academicTerm:id,academic_year,term,name'])
             ->orderBy('id')
-            ->get()
-            ->map(fn ($offering): array => [
+            ->get();
+        $byOffering = $offerings->map(function (SubjectOffering $offering) use ($studentId): array {
+            $ledger = $this->attendanceLedger->forOffering($offering, $studentId);
+            $row = $ledger['students'][0] ?? null;
+
+            return [
+                'id' => $offering->id,
+                'code' => $offering->subject->code,
+                'title' => $offering->subject->title,
+                'academic_term_id' => $offering->academic_term_id,
+                'academic_term' => $offering->academicTerm->name,
+                'total' => $row['eligible_meetings'] ?? 0,
+                'present' => $row['present'] ?? 0,
+                'absent' => $row['absent'] ?? 0,
+                'late' => $row['late'] ?? 0,
+                'excused' => $row['excused'] ?? 0,
+                'late_absence_equivalents' => $row['late_absence_equivalents'] ?? 0,
+                'absence_equivalents' => $row['absence_equivalents'] ?? 0,
+                'attendance_percentage' => $row['attendance_percentage'] ?? null,
+                'weighted_contribution' => $row['weighted_contribution'] ?? null,
+                'allowed_absences' => $row['allowed_absences'] ?? null,
+                'remaining_absences' => $row['remaining_absences'] ?? null,
+                'allowance_exceeded' => $row['allowance_exceeded'] ?? false,
+            ];
+        })->values();
+        $totals = $byOffering->reduce(function (array $carry, array $row): array {
+            foreach (['present', 'absent', 'late', 'excused'] as $status) {
+                $carry[$status] += $row[$status];
+            }
+            $carry['total'] += $row['total'];
+
+            return $carry;
+        }, ['present' => 0, 'absent' => 0, 'late' => 0, 'excused' => 0, 'total' => 0]);
+
+        return ApiResponse::success([
+            'summary' => $totals,
+            'by_subject' => $byOffering,
+            'terms' => $terms,
+            'offerings' => $offerings->map(fn (SubjectOffering $offering): array => [
                 'id' => $offering->id,
                 'subject' => [
                     'id' => $offering->subject->id,
                     'code' => $offering->subject->code,
                     'title' => $offering->subject->title,
                 ],
-                'academic_term_id' => $offering->academicTerm->id,
+                'academic_term_id' => $offering->academic_term_id,
                 'academic_term' => $offering->academicTerm->name,
-            ]);
-
-        $bySubject = (clone $query)
-            ->join('attendance_sessions', 'attendance_sessions.id', '=', 'student_attendance.attendance_session_id')
-            ->join('class_schedules', 'class_schedules.id', '=', 'attendance_sessions.class_schedule_id')
-            ->join('subject_offerings', 'subject_offerings.id', '=', 'class_schedules.subject_offering_id')
-            ->join('subjects', 'subjects.id', '=', 'subject_offerings.subject_id')
-            ->select([
-                'subjects.id',
-                'subjects.code',
-                'subjects.title',
-                DB::raw('COUNT(*) AS total'),
-                DB::raw("SUM(student_attendance.status = 'present') AS present"),
-                DB::raw("SUM(student_attendance.status = 'absent') AS absent"),
-                DB::raw("SUM(student_attendance.status = 'late') AS late"),
-                DB::raw("SUM(student_attendance.status = 'excused') AS excused"),
-            ])
-            ->groupBy('subjects.id', 'subjects.code', 'subjects.title')
-            ->orderBy('subjects.code')
-            ->get();
-
-        return ApiResponse::success([
-            'summary' => $this->summaryCounts(clone $query),
-            'by_subject' => $bySubject,
-            'terms' => $terms,
-            'offerings' => $offerings,
+            ])->all(),
         ], 'Your attendance summary loaded.');
     }
 
@@ -530,6 +581,7 @@ final class AttendanceController extends Controller
             'classSchedule.subjectOffering.section.program',
             'classSchedule.subjectOffering.academicTerm',
             'classSchedule.scheduleAssignments.facultyAssignment.professor.user',
+            'classSchedule.roomAllocations.room',
         ];
     }
 

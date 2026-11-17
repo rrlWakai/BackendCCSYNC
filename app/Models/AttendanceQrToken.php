@@ -38,6 +38,8 @@ class AttendanceQrToken extends Model
 
     public function isUsable(): bool
     {
-        return $this->revoked_at === null && $this->expires_at?->isFuture() === true;
+        return $this->revoked_at === null
+            && $this->expires_at !== null
+            && now()->lessThanOrEqualTo($this->expires_at);
     }
 }

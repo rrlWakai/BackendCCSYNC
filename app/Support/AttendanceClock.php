@@ -9,6 +9,8 @@ final class AttendanceClock
 {
     public const DEFAULT_TIMEZONE = 'Asia/Manila';
 
+    public const GRACE_PERIOD_MINUTES = 15;
+
     public static function timezone(): string
     {
         $timezone = config('attendance.timezone');
@@ -41,7 +43,17 @@ final class AttendanceClock
     public static function lateAt(AttendanceSession $session): CarbonImmutable
     {
         return self::classStart($session)
-            ->addMinutes(max(0, (int) config('attendance.qr_late_after_minutes', 15)));
+            ->addMinutes(self::GRACE_PERIOD_MINUTES);
+    }
+
+    public static function classEnd(AttendanceSession $session): CarbonImmutable
+    {
+        $session->loadMissing('classSchedule');
+
+        return CarbonImmutable::parse(
+            $session->class_date->toDateString().' '.(string) $session->classSchedule->end_time,
+            self::timezone(),
+        );
     }
 
     public static function statusForCheckIn(
@@ -50,7 +62,7 @@ final class AttendanceClock
     ): string {
         $now ??= self::now();
 
-        return $now->greaterThanOrEqualTo(self::lateAt($session)) ? 'late' : 'present';
+        return $now->greaterThan(self::classStart($session)) ? 'late' : 'present';
     }
 
     public static function checkInTime(?CarbonImmutable $now = null): string

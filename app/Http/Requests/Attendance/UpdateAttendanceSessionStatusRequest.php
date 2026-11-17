@@ -19,7 +19,7 @@ final class UpdateAttendanceSessionStatusRequest extends ApiFormRequest
     public function rules(): array
     {
         return [
-            'status' => ['required', Rule::in(['submitted', 'cancelled'])],
+            'status' => ['required', Rule::in(['cancelled'])],
             'cancellation_reason' => [
                 Rule::requiredIf($this->input('status') === 'cancelled'),
                 Rule::prohibitedIf($this->input('status') !== 'cancelled'),
