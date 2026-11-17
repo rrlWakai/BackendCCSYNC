@@ -134,7 +134,7 @@ class DevelopmentAccountSeeder extends Seeder
             ['expected_students' => 45, 'status' => 'open'],
         );
 
-        StudentSubjectEnrollment::updateOrCreate(
+        StudentSubjectEnrollment::firstOrCreate(
             [
                 'student_id' => $student->id,
                 'subject_offering_id' => $offering->id,
