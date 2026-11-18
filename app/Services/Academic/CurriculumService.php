@@ -14,13 +14,21 @@ final class CurriculumService
     /**
      * @return Collection<int, Subject>
      */
-    public function subjectsFor(Program $program, YearLevel $yearLevel, ?Major $major = null): Collection
-    {
+    public function subjectsFor(
+        Program $program,
+        YearLevel $yearLevel,
+        ?Major $major = null,
+        ?string $semester = null,
+        ?string $classification = null,
+    ): Collection {
         $requirements = CurriculumRequirement::query()
             ->with('subject')
             ->where('program_id', $program->id)
             ->where('year_level_id', $yearLevel->id)
             ->where('status', 'active')
+            ->when($semester !== null, fn ($query) => $query->where(fn ($nested) => $nested
+                ->where('semester', $semester)
+                ->orWhereNull('semester')))
             ->when(
                 $major === null,
                 fn ($query) => $query->whereNull('major_id'),
@@ -28,6 +36,9 @@ final class CurriculumService
                     ->whereNull('major_id')
                     ->orWhere('major_id', $major->id)),
             )
+            ->when($classification === 'common', fn ($query) => $query->whereNull('major_id'))
+            ->when($classification === 'major', fn ($query) => $query->whereNotNull('major_id'))
+            ->orderBy('semester')
             ->orderBy('requirement_type')
             ->orderBy('id')
             ->get();

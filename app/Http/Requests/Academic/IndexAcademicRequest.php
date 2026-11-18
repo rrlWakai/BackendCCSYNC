@@ -27,6 +27,8 @@ final class IndexAcademicRequest extends ApiFormRequest
             ])],
             'program_id' => ['sometimes', 'integer', 'min:1'],
             'year_level_id' => ['sometimes', 'integer', 'min:1'],
+            'semester' => ['sometimes', 'nullable', Rule::in(['first', 'second', 'summer'])],
+            'classification' => ['sometimes', 'nullable', Rule::in(['common', 'major'])],
             'academic_term_id' => ['sometimes', 'integer', 'min:1'],
             'academic_year_id' => ['sometimes', 'integer', 'min:1'],
             'major_id' => ['sometimes', 'integer', 'min:1'],

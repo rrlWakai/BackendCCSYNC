@@ -32,13 +32,13 @@ final class CurriculumRequirementController extends Controller
             'subject:id,code,title,units,status',
         ]);
 
-        foreach (['program_id', 'year_level_id', 'major_id', 'subject_id', 'status'] as $filter) {
+        foreach (['program_id', 'year_level_id', 'semester', 'major_id', 'subject_id', 'classification', 'status'] as $filter) {
             if ($request->filled($filter)) {
                 $query->where($filter, $request->input($filter));
             }
         }
 
-        $result = AcademicDirectory::paginate($query, $request, ['requirement_type'], []);
+        $result = AcademicDirectory::paginate($query, $request, ['requirement_type', 'semester', 'classification'], []);
 
         return ApiResponse::success([
             'curriculum_requirements' => $result['items'],
@@ -88,17 +88,44 @@ final class CurriculumRequirementController extends Controller
         $attributes = $request->validate([
             'program_id' => ['required', 'integer', Rule::exists('programs', 'id')],
             'year_level_id' => ['required', 'integer', Rule::exists('year_levels', 'id')],
+            'semester' => ['sometimes', 'nullable', Rule::in(CurriculumRequirement::SEMESTERS)],
+            'classification' => ['sometimes', Rule::in(CurriculumRequirement::CLASSIFICATIONS)],
             'major_id' => ['sometimes', 'nullable', 'integer', Rule::exists('majors', 'id')],
         ]);
 
         $program = Program::query()->findOrFail($attributes['program_id']);
         $yearLevel = YearLevel::query()->findOrFail($attributes['year_level_id']);
+        $classification = $attributes['classification'] ?? null;
         $major = isset($attributes['major_id']) && $attributes['major_id'] !== null
             ? Major::query()->findOrFail($attributes['major_id'])
             : null;
 
+        if ($classification === 'common' && $major !== null) {
+            throw ValidationException::withMessages([
+                'major_id' => 'Common and minor curriculum mappings cannot be assigned to a specific major.',
+            ]);
+        }
+
+        if ($classification === 'major' && $major === null) {
+            throw ValidationException::withMessages([
+                'major_id' => 'Major-specific curriculum mappings require a major.',
+            ]);
+        }
+
+        if ($major !== null && (int) $major->program_id !== (int) $program->id) {
+            throw ValidationException::withMessages([
+                'major_id' => 'The selected major must belong to the selected program.',
+            ]);
+        }
+
         return ApiResponse::success([
-            'subjects' => $this->curriculum->subjectsFor($program, $yearLevel, $major),
+            'subjects' => $this->curriculum->subjectsFor(
+                $program,
+                $yearLevel,
+                $major,
+                $attributes['semester'] ?? null,
+                $classification,
+            ),
         ], 'Curriculum subjects loaded.');
     }
 
@@ -111,15 +138,35 @@ final class CurriculumRequirementController extends Controller
         $yearLevelId = $request->input('year_level_id', $requirement?->year_level_id);
         $subjectId = $request->input('subject_id', $requirement?->subject_id);
         $majorId = $request->input('major_id', $requirement?->major_id);
+        $semester = $request->input('semester', $requirement?->semester);
+        $classification = $request->input('classification', $requirement?->classification);
 
         $attributes = $request->validate([
             'program_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('programs', 'id')],
             'year_level_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('year_levels', 'id')],
+            'semester' => [$requirement === null ? 'required' : 'sometimes', Rule::in(CurriculumRequirement::SEMESTERS)],
             'major_id' => ['sometimes', 'nullable', 'integer', Rule::exists('majors', 'id')],
+            'classification' => [$requirement === null ? 'required' : 'sometimes', Rule::in(CurriculumRequirement::CLASSIFICATIONS)],
             'subject_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('subjects', 'id')],
             'requirement_type' => ['sometimes', Rule::in(['core', 'minor', 'major', 'elective'])],
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
+
+        if ($classification === null) {
+            $classification = $majorId === null ? 'common' : 'major';
+        }
+
+        if ($classification === 'common' && $majorId !== null) {
+            throw ValidationException::withMessages([
+                'major_id' => 'Common and minor curriculum mappings cannot be assigned to a specific major.',
+            ]);
+        }
+
+        if ($classification === 'major' && $majorId === null) {
+            throw ValidationException::withMessages([
+                'major_id' => 'Major-specific curriculum mappings require a major.',
+            ]);
+        }
 
         if ($majorId !== null) {
             $major = Major::query()->find($majorId);
@@ -135,6 +182,11 @@ final class CurriculumRequirementController extends Controller
             ->where('year_level_id', $yearLevelId)
             ->where('subject_id', $subjectId)
             ->when(
+                $semester === null,
+                fn ($query) => $query->whereNull('semester'),
+                fn ($query) => $query->where('semester', $semester),
+            )
+            ->when(
                 $majorId === null,
                 fn ($query) => $query->whereNull('major_id'),
                 fn ($query) => $query->where('major_id', $majorId),
@@ -144,9 +196,12 @@ final class CurriculumRequirementController extends Controller
 
         if ($exists) {
             throw ValidationException::withMessages([
-                'subject_id' => 'This subject is already part of the selected curriculum scope.',
+                'subject_id' => 'This subject is already part of the selected program, year level, semester, and major scope.',
             ]);
         }
+
+        $attributes['semester'] = $semester;
+        $attributes['classification'] = $classification;
 
         return $attributes;
     }

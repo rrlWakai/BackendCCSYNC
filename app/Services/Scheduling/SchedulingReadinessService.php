@@ -4,9 +4,11 @@ namespace App\Services\Scheduling;
 
 use App\Models\AcademicTerm;
 use App\Models\ClassSchedule;
+use App\Models\CurriculumRequirement;
 use App\Models\FacultyAvailability;
 use App\Models\Room;
 use App\Models\ScheduleConflict;
+use App\Models\Section;
 use App\Models\SubjectOffering;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -47,7 +49,7 @@ final class SchedulingReadinessService
             ->where('status', 'open')
             ->with([
                 'subject:id,code,title,status,units,lecture_hours,lab_hours',
-                'section:id,code,name,program_id,year_level_id,academic_term_id,status,capacity',
+                'section:id,code,name,program_id,year_level_id,major_id,academic_term_id,status,capacity',
                 'section.program:id,code,name,status',
                 'section.yearLevel:id,level,name',
                 'facultyAssignments' => fn ($query) => $query
@@ -96,6 +98,7 @@ final class SchedulingReadinessService
 
         $this->inspectTerm($term, $issues);
         $this->inspectOfferings($term, $offerings, $issues);
+        $this->inspectCurriculum($term, $offerings, $issues);
         $assignedProfessors = $this->inspectAssignments($offerings, $issues);
         $this->inspectAvailability($term, $assignedProfessors, $issues);
         $this->inspectRooms($rooms, $offerings, $issues);
@@ -200,7 +203,7 @@ final class SchedulingReadinessService
             'info',
             'authoritative_offering_set',
             'academic',
-            'The required offering set is every open offering for the term. CCSync has no curriculum source to cross-check for missing offerings.',
+            'The required offering set is every open offering for the term. Curriculum mappings are used to validate each offering and to report missing offerings; they never create offerings automatically.',
             'academic_term',
             (string) $term->id,
             $offerings->pluck('id')->map(fn ($id): string => (string) $id)->all(),
@@ -269,6 +272,136 @@ final class SchedulingReadinessService
                     'Expected enrollment is missing. It is required before any physical-room meeting can be generated.',
                     $context,
                     $entityId,
+                );
+            }
+        }
+    }
+
+    private function inspectCurriculum(AcademicTerm $term, Collection $offerings, array &$issues): void
+    {
+        if ($offerings->isEmpty()) {
+            return;
+        }
+
+        $semester = $term->term;
+
+        if (! in_array($semester, CurriculumRequirement::SEMESTERS, true)) {
+            $this->addIssue(
+                $issues,
+                'warning',
+                'curriculum_semester_unrecognized',
+                'academic',
+                'The academic term classification is not a recognized semester, so curriculum mappings cannot be matched.',
+                'academic_term',
+                (string) $term->id,
+            );
+
+            return;
+        }
+
+        $sections = Section::query()
+            ->where('academic_term_id', $term->id)
+            ->where('status', 'active')
+            ->orderBy('id')
+            ->get(['id', 'program_id', 'year_level_id', 'major_id']);
+
+        if ($sections->isEmpty()) {
+            return;
+        }
+
+        $requirements = CurriculumRequirement::query()
+            ->where('status', 'active')
+            ->where(fn (Builder $query) => $query
+                ->where('semester', $semester)
+                ->orWhereNull('semester'))
+            ->whereIn('program_id', $sections->pluck('program_id')->unique()->values())
+            ->whereIn('year_level_id', $sections->pluck('year_level_id')->unique()->values())
+            ->orderBy('id')
+            ->get(['id', 'program_id', 'year_level_id', 'semester', 'classification', 'major_id', 'subject_id']);
+
+        $requirementsByScope = $requirements->groupBy(
+            fn (CurriculumRequirement $requirement): string => $requirement->program_id.'|'.$requirement->year_level_id,
+        );
+
+        $requirementAppliesToSection = function (CurriculumRequirement $requirement, Section $section): bool {
+            if ($requirement->classification !== 'major') {
+                return $requirement->major_id === null;
+            }
+
+            return (int) $requirement->major_id === (int) $section->major_id;
+        };
+
+        $reportedMissingMappings = [];
+        $offeringsBySection = $offerings->groupBy('section_id');
+
+        foreach ($sections as $section) {
+            $scopeKey = $section->program_id.'|'.$section->year_level_id;
+            $scopeRequirements = $requirementsByScope->get($scopeKey, collect());
+
+            if ($scopeRequirements->isEmpty()) {
+                if (! isset($reportedMissingMappings[$scopeKey])) {
+                    $reportedMissingMappings[$scopeKey] = true;
+                    $this->addIssue(
+                        $issues,
+                        'warning',
+                        'curriculum_mapping_missing',
+                        'academic',
+                        'No active curriculum mappings exist for this program, year level, and semester. Offerings for the scope cannot be validated against a curriculum.',
+                        'section',
+                        (string) $section->id,
+                    );
+                }
+
+                continue;
+            }
+
+            $sectionOfferings = $offeringsBySection->get($section->id, collect());
+
+            foreach ($sectionOfferings as $offering) {
+                $matches = $scopeRequirements->filter(
+                    fn (CurriculumRequirement $requirement): bool => (int) $requirement->subject_id === (int) $offering->subject_id
+                        && $requirementAppliesToSection($requirement, $section),
+                );
+
+                if ($matches->isEmpty()) {
+                    $this->addIssue(
+                        $issues,
+                        'blocking',
+                        'offering_subject_not_in_curriculum',
+                        'academic',
+                        'The offering subject is not mapped to the section program, year level, semester, and major in the active curriculum.',
+                        'subject_offering',
+                        (string) $offering->id,
+                        $scopeRequirements
+                            ->where('subject_id', $offering->subject_id)
+                            ->pluck('id')
+                            ->map(fn ($id): string => (string) $id)
+                            ->values()
+                            ->all(),
+                    );
+                }
+            }
+
+            $offeredSubjectIds = $sectionOfferings
+                ->pluck('subject_id')
+                ->map(fn ($id): int => (int) $id)
+                ->flip();
+
+            $missing = $scopeRequirements
+                ->filter(fn (CurriculumRequirement $requirement): bool => $requirementAppliesToSection($requirement, $section))
+                ->reject(fn (CurriculumRequirement $requirement): bool => $offeredSubjectIds->has((int) $requirement->subject_id))
+                ->values();
+
+            if ($missing->isNotEmpty()) {
+                $this->addIssue(
+                    $issues,
+                    'warning',
+                    'curriculum_offering_missing',
+                    'academic',
+                    'One or more curriculum-mapped subjects have no open offering for this section and semester.',
+                    'section',
+                    (string) $section->id,
+                    $missing->pluck('id')->map(fn ($id): string => (string) $id)->all(),
                 );
             }
         }

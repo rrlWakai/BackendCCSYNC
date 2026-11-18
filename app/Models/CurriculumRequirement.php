@@ -10,10 +10,16 @@ class CurriculumRequirement extends Model
 {
     use HasFactory;
 
+    public const SEMESTERS = ['first', 'second', 'summer'];
+
+    public const CLASSIFICATIONS = ['common', 'major'];
+
     protected $fillable = [
         'program_id',
         'year_level_id',
+        'semester',
         'major_id',
+        'classification',
         'subject_id',
         'requirement_type',
         'status',

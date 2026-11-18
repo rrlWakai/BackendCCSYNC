@@ -17,9 +17,12 @@ final class SubjectController extends Controller
     public function index(IndexAcademicRequest $request): JsonResponse
     {
         Gate::authorize('viewAny', Subject::class);
-        $result = AcademicDirectory::paginate(Subject::query(), $request, ['code', 'title', 'description'], [
-            'status' => 'status',
-        ]);
+        $result = AcademicDirectory::paginate(
+            Subject::query()->withCount(['curriculumRequirements', 'subjectOfferings']),
+            $request,
+            ['code', 'title', 'description'],
+            ['status' => 'status'],
+        );
 
         return ApiResponse::success([
             'subjects' => $result['items'],
@@ -37,6 +40,7 @@ final class SubjectController extends Controller
     public function show(Subject $subject): JsonResponse
     {
         Gate::authorize('view', $subject);
+        $subject->loadCount(['curriculumRequirements', 'subjectOfferings']);
 
         return ApiResponse::success(['subject' => $subject], 'Subject loaded.');
     }
