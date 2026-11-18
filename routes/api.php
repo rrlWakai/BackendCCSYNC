@@ -127,6 +127,8 @@ Route::prefix('v1')
                     ->name('major-selections.index');
                 Route::patch('/major-selections/{selection}/review', [MajorSelectionController::class, 'review'])
                     ->name('major-selections.review');
+                Route::patch('/major-selections/{selection}/correct', [MajorSelectionController::class, 'correct'])
+                    ->name('major-selections.correct');
 
                 Route::get('/promotions/due', [PromotionController::class, 'due'])->name('promotions.due');
                 Route::get('/promotions', [PromotionController::class, 'index'])->name('promotions.index');

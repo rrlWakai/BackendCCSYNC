@@ -9,26 +9,29 @@ final class ProcessDuePromotions extends Command
 {
     protected $signature = 'promotions:process-due';
 
-    protected $description = 'Report academic years whose Second Semester has ended and promotion has not been prepared.';
+    protected $description = 'Process automatic promotions for Second Semesters that have ended.';
 
     public function handle(PromotionService $promotions): int
     {
-        $due = collect($promotions->duePromotions());
+        $results = collect($promotions->processDue());
 
-        if ($due->isEmpty()) {
+        if ($results->isEmpty()) {
             $this->info('No academic years are due for promotion.');
 
             return self::SUCCESS;
         }
 
         $this->table(
-            ['Academic year', 'Source term', 'Ended on', 'Promotion status', 'Run ID'],
-            $due->map(fn (array $item): array => [
+            ['Academic year', 'Source term', 'Ended on', 'Status', 'Run ID', 'Promoted', 'Exceptions', 'Message'],
+            $results->map(fn (array $item): array => [
                 $item['academic_year'] ?? '—',
                 $item['source_term'] ?? '—',
                 $item['ends_on'] ?? '—',
                 $item['status'],
                 $item['promotion_run_id'] ?? '—',
+                $item['promoted_count'] ?? 0,
+                $item['exception_count'] ?? 0,
+                $item['message'] ?? '—',
             ])->all(),
         );
 

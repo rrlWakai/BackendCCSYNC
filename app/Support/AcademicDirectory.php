@@ -34,9 +34,11 @@ final class AcademicDirectory
             }
         }
 
-        $paginator = $query
-            ->orderBy($query->getModel()->getQualifiedKeyName())
-            ->paginate($request->integer('per_page', 25));
+        if (empty($query->getQuery()->orders)) {
+            $query->orderBy($query->getModel()->getQualifiedKeyName());
+        }
+
+        $paginator = $query->paginate($request->integer('per_page', 25));
 
         return [
             'items' => $paginator->items(),

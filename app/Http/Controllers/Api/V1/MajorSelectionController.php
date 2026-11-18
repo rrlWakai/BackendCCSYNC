@@ -41,7 +41,7 @@ final class MajorSelectionController extends Controller
             $query->where('academic_year_id', $request->integer('academic_year_id'));
         }
 
-        $result = AcademicDirectory::paginate($query, $request, [], []);
+        $result = AcademicDirectory::paginate($query->orderByDesc('id'), $request, [], []);
 
         return ApiResponse::success([
             'major_selections' => $result['items'],
@@ -66,5 +66,24 @@ final class MajorSelectionController extends Controller
         );
 
         return ApiResponse::success(['major_selection' => $selection], 'Major selection reviewed.');
+    }
+
+    public function correct(Request $request, StudentMajorSelection $selection): JsonResponse
+    {
+        abort_unless($request->user()?->hasRole(Role::ADMINISTRATOR) ?? false, 403);
+
+        $attributes = $request->validate([
+            'major_id' => ['required', 'integer', Rule::exists('majors', 'id')],
+            'reason' => ['required', 'string', 'max:1000'],
+        ]);
+
+        $selection = $this->selections->correct(
+            $selection,
+            (int) $attributes['major_id'],
+            $request->user(),
+            $attributes['reason'],
+        );
+
+        return ApiResponse::success(['major_selection' => $selection], 'Major selection corrected.');
     }
 }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Academic\IndexAcademicRequest;
 use App\Models\MajorSelectionPeriod;
+use App\Models\YearLevel;
 use App\Support\AcademicDirectory;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -39,7 +40,7 @@ final class MajorSelectionPeriodController extends Controller
             $query->where('target_year_level_id', $request->integer('target_year_level_id'));
         }
 
-        $result = AcademicDirectory::paginate($query, $request, [], []);
+        $result = AcademicDirectory::paginate($query->orderByDesc('id'), $request, [], []);
 
         return ApiResponse::success([
             'major_selection_periods' => $result['items'],
@@ -126,6 +127,16 @@ final class MajorSelectionPeriodController extends Controller
             throw ValidationException::withMessages([
                 'closes_at' => 'The closing time must be after the opening time.',
             ]);
+        }
+
+        if ($targetYearLevelId !== null) {
+            $targetYearLevel = YearLevel::query()->find($targetYearLevelId);
+
+            if ($targetYearLevel !== null && $targetYearLevel->level !== 3) {
+                throw ValidationException::withMessages([
+                    'target_year_level_id' => 'Major selection periods must target the third-year level.',
+                ]);
+            }
         }
 
         return $attributes;

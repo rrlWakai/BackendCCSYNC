@@ -22,9 +22,19 @@ final class PromotionService
 {
     private const MAJOR_START_LEVEL = 3;
 
+    private const BLOCKING_EXCEPTIONS = [
+        'terminal_year_level',
+        'already_placed',
+        'major_required',
+        'not_eligible',
+        'source_placement_changed',
+        'student_inactive',
+    ];
+
     public function __construct(
         private readonly SectionAllocationService $sections,
         private readonly StudentLifecycleService $lifecycle,
+        private readonly AcademicYearService $academicYears,
     ) {}
 
     public function prepare(
@@ -89,21 +99,32 @@ final class PromotionService
                 'prepared_at' => now(),
             ]);
 
-            $placements = StudentAcademicPlacement::query()
-                ->with(['student', 'program', 'yearLevel', 'major'])
-                ->where('academic_year_id', $sourceYear->id)
-                ->where('is_current', true)
-                ->where('status', 'active')
-                ->whereHas('student', fn ($query) => $query->where('status', 'active'))
-                ->orderBy('student_id')
-                ->get();
+            $placements = $this->sourcePlacements($sourceYear);
 
             foreach ($placements as $placement) {
-                $this->prepareItem($run, $placement, $targetYear, $targetTerm);
+                $this->prepareItem($run, $placement, $sourceYear, $targetYear, $targetTerm);
             }
 
             return $run->refresh()->load($this->runRelations());
         }, attempts: 3);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function processDue(?User $actor = null): array
+    {
+        $terms = AcademicTerm::query()
+            ->where('term', 'second')
+            ->whereDate('ends_on', '<', now()->toDateString())
+            ->with('academicYear')
+            ->orderBy('ends_on')
+            ->get();
+
+        return $terms
+            ->map(fn (AcademicTerm $term): array => $this->processDueTerm($term, $actor))
+            ->values()
+            ->all();
     }
 
     public function adjustItem(
@@ -159,6 +180,13 @@ final class PromotionService
                 ? ($attributes['section_id'] === null ? null : (int) $attributes['section_id'])
                 : $item->section_id;
 
+            if (
+                ! array_key_exists('section_id', $attributes)
+                && (array_key_exists('major_id', $attributes) || array_key_exists('to_year_level_id', $attributes))
+            ) {
+                $sectionId = null;
+            }
+
             if ($sectionId !== null) {
                 $section = Section::query()->findOrFail($sectionId);
                 $this->assertSectionMatches($run, $section, (int) $fromPlacement->program_id, $toYearLevelId, $majorId);
@@ -207,10 +235,11 @@ final class PromotionService
 
         return DB::transaction(function () use ($run): array {
             $run = PromotionRun::query()->lockForUpdate()->findOrFail($run->id);
-            $run->load(['items.fromPlacement', 'targetTerm']);
+            $run->load(['items.fromPlacement', 'targetTerm', 'targetAcademicYear']);
 
             $items = $run->items
-                ->filter(fn (PromotionRunItem $item): bool => $item->to_year_level_id !== null)
+                ->filter(fn (PromotionRunItem $item): bool => $item->to_year_level_id !== null
+                    && ! in_array($item->exception_code, self::BLOCKING_EXCEPTIONS, true))
                 ->groupBy(fn (PromotionRunItem $item): string => sprintf(
                     '%d:%d:%s',
                     $item->fromPlacement->program_id,
@@ -227,34 +256,35 @@ final class PromotionService
                 $yearLevelId = (int) $first->to_year_level_id;
                 $majorId = $first->major_id === null ? null : (int) $first->major_id;
 
-                $sections = $this->sections->sectionsFor($run->targetTerm, $programId, $yearLevelId, $majorId);
+                $sections = $this->sections->sectionsFor(
+                    $run->targetTerm,
+                    $programId,
+                    $yearLevelId,
+                    $majorId,
+                    true,
+                );
+
+                $occupied = $sections->mapWithKeys(fn (Section $section): array => [
+                    $section->id => $this->sections->occupiedSeats($section, $run->targetTerm),
+                ])->all();
+
                 $summary = $this->sections->summarizeGroup(
                     $programId,
                     $yearLevelId,
                     $majorId,
                     $group->count(),
                     $sections,
+                    $occupied,
                 );
 
                 $remaining = $sections->mapWithKeys(fn (Section $section): array => [
-                    $section->id => $this->remainingCapacity($section, $run),
-                ]);
+                    $section->id => $section->capacity === null
+                        ? null
+                        : max(0, $section->capacity - ($occupied[$section->id] ?? 0)),
+                ])->all();
 
                 foreach ($group as $item) {
-                    $assigned = null;
-
-                    foreach ($sections as $section) {
-                        $left = $remaining[$section->id] ?? 0;
-
-                        if ($left === null || $left > 0) {
-                            $assigned = $section;
-                            if ($left !== null) {
-                                $remaining[$section->id] = $left - 1;
-                            }
-
-                            break;
-                        }
-                    }
+                    $assigned = $this->nextSection($sections, $remaining);
 
                     if ($assigned === null) {
                         $item->update([
@@ -265,6 +295,10 @@ final class PromotionService
                         ]);
 
                         continue;
+                    }
+
+                    if ($remaining[$assigned->id] !== null) {
+                        $remaining[$assigned->id]--;
                     }
 
                     $item->update([
@@ -294,7 +328,7 @@ final class PromotionService
         }, attempts: 3);
     }
 
-    public function finalize(PromotionRun $run, User $actor, bool $allowShortages = false): PromotionRun
+    public function finalize(PromotionRun $run, ?User $actor, bool $allowShortages = false): PromotionRun
     {
         if ($run->status !== 'prepared') {
             throw ValidationException::withMessages([
@@ -325,6 +359,28 @@ final class PromotionService
                 $fromPlacement = StudentAcademicPlacement::query()
                     ->lockForUpdate()
                     ->findOrFail($item->from_placement_id);
+
+                $student = Student::query()->with('user')->lockForUpdate()->findOrFail($item->student_id);
+
+                if ($student->status !== 'active' || $student->user?->status !== 'active') {
+                    $item->update([
+                        'status' => 'exception',
+                        'exception_code' => 'student_inactive',
+                        'exception_message' => 'The student account is no longer active.',
+                    ]);
+
+                    continue;
+                }
+
+                if (! $fromPlacement->is_current || $fromPlacement->status !== 'active') {
+                    $item->update([
+                        'status' => 'exception',
+                        'exception_code' => 'source_placement_changed',
+                        'exception_message' => 'The source placement is no longer the student current placement.',
+                    ]);
+
+                    continue;
+                }
 
                 $alreadyPlaced = StudentAcademicPlacement::query()
                     ->where('student_id', $item->student_id)
@@ -361,7 +417,6 @@ final class PromotionService
                     'ends_on' => $run->targetTerm->starts_on?->copy()->subDay()->toDateString(),
                 ]);
 
-                $student = Student::query()->lockForUpdate()->findOrFail($item->student_id);
                 $student->forceFill([
                     'current_placement_id' => $placement->id,
                     'section_id' => $placement->section_id,
@@ -386,7 +441,7 @@ final class PromotionService
 
             $run->update([
                 'status' => 'finalized',
-                'finalized_by' => $actor->id,
+                'finalized_by' => $actor?->id,
                 'finalized_at' => now(),
             ]);
 
@@ -427,17 +482,213 @@ final class PromotionService
         })->values()->all();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function processDueTerm(AcademicTerm $term, ?User $actor): array
+    {
+        $sourceYear = $this->academicYears->resolveForTerm($term);
+        $base = [
+            'academic_year_id' => $sourceYear->id,
+            'academic_year' => $sourceYear->label,
+            'source_term_id' => $term->id,
+            'source_term' => $term->name,
+            'ends_on' => $term->ends_on?->toDateString(),
+        ];
+
+        $existing = PromotionRun::query()
+            ->with(['targetAcademicYear', 'targetTerm'])
+            ->where('source_academic_year_id', $sourceYear->id)
+            ->where('source_term_id', $term->id)
+            ->first();
+
+        if ($existing !== null && $existing->status === 'finalized') {
+            return $this->processResult($base, $existing, 'finalized');
+        }
+
+        if ($existing !== null && $existing->prepared_by !== null) {
+            return $this->processResult($base, $existing, 'manual_pending');
+        }
+
+        $targetYear = $existing?->targetAcademicYear;
+        $targetTerm = $existing?->targetTerm;
+
+        if ($targetYear === null || $targetTerm === null) {
+            $targetYear = AcademicYear::query()
+                ->where('id', '!=', $sourceYear->id)
+                ->where('starts_on', '>', $sourceYear->starts_on)
+                ->orderBy('starts_on')
+                ->first();
+
+            if ($targetYear === null) {
+                return [
+                    ...$base,
+                    'status' => 'configuration_incomplete',
+                    'promotion_run_id' => null,
+                    'promoted_count' => 0,
+                    'exception_count' => 0,
+                    'message' => 'No later academic year is configured for promotion.',
+                ];
+            }
+
+            $targetTerm = AcademicTerm::query()
+                ->where('academic_year_id', $targetYear->id)
+                ->where('term', 'first')
+                ->orderBy('starts_on')
+                ->first();
+        }
+
+        if (
+            $targetTerm === null
+            || $targetTerm->starts_on === null
+            || $term->ends_on === null
+            || $targetTerm->starts_on->lessThanOrEqualTo($term->ends_on)
+        ) {
+            return [
+                ...$base,
+                'status' => 'configuration_incomplete',
+                'promotion_run_id' => null,
+                'promoted_count' => 0,
+                'exception_count' => 0,
+                'message' => 'The target academic year needs a valid First Semester term.',
+            ];
+        }
+
+        $outcome = DB::transaction(function () use ($sourceYear, $term, $targetYear, $targetTerm): array {
+            $existing = PromotionRun::query()
+                ->where('source_academic_year_id', $sourceYear->id)
+                ->where('source_term_id', $term->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing !== null) {
+                if ($existing->status === 'finalized') {
+                    return ['run' => $existing, 'state' => 'finalized'];
+                }
+
+                if ($existing->prepared_by !== null) {
+                    return ['run' => $existing, 'state' => 'manual_pending'];
+                }
+
+                $run = $existing;
+
+                if (
+                    (int) $run->target_academic_year_id !== (int) $targetYear->id
+                    || (int) $run->target_term_id !== (int) $targetTerm->id
+                ) {
+                    $run->update([
+                        'target_academic_year_id' => $targetYear->id,
+                        'target_term_id' => $targetTerm->id,
+                    ]);
+                }
+            } else {
+                $run = PromotionRun::create([
+                    'source_academic_year_id' => $sourceYear->id,
+                    'target_academic_year_id' => $targetYear->id,
+                    'source_term_id' => $term->id,
+                    'target_term_id' => $targetTerm->id,
+                    'status' => 'prepared',
+                    'prepared_by' => null,
+                    'prepared_at' => now(),
+                    'notes' => 'Automatically prepared after the Second Semester ended.',
+                ]);
+            }
+
+            $placements = $this->sourcePlacements($sourceYear);
+
+            if ($placements->isEmpty()) {
+                $run->items()
+                    ->where('status', '!=', 'promoted')
+                    ->update([
+                        'section_id' => null,
+                        'status' => 'exception',
+                        'exception_code' => 'not_eligible',
+                        'exception_message' => 'The student is no longer in the eligible active population.',
+                    ]);
+
+                return ['run' => $run->refresh(), 'state' => 'no_eligible_students'];
+            }
+
+            $activeStudentIds = $placements->pluck('student_id')->all();
+
+            $run->items()
+                ->whereNotIn('student_id', $activeStudentIds)
+                ->where('status', '!=', 'promoted')
+                ->update([
+                    'section_id' => null,
+                    'status' => 'exception',
+                    'exception_code' => 'not_eligible',
+                    'exception_message' => 'The student is no longer in the eligible active population.',
+                ]);
+
+            foreach ($placements as $placement) {
+                $this->prepareItem($run, $placement, $sourceYear, $targetYear, $targetTerm);
+            }
+
+            return ['run' => $run->refresh(), 'state' => 'prepared'];
+        }, attempts: 3);
+
+        $run = $outcome['run'];
+
+        if (in_array($outcome['state'], ['finalized', 'manual_pending', 'no_eligible_students'], true)) {
+            return $this->processResult($base, $run, $outcome['state']);
+        }
+
+        $this->allocate($run);
+        $run = $run->refresh()->load('items');
+        $exceptionCount = $run->items->where('status', 'exception')->count();
+
+        if ($exceptionCount === 0) {
+            $run = $this->finalize($run, $actor);
+            $state = 'finalized';
+        } else {
+            $state = 'exceptions';
+        }
+
+        return $this->processResult($base, $run, $state);
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @return array<string, mixed>
+     */
+    private function processResult(array $base, PromotionRun $run, string $state): array
+    {
+        $run->loadCount([
+            'items as promoted_count' => fn ($query) => $query->where('status', 'promoted'),
+            'items as exception_count' => fn ($query) => $query->where('status', 'exception'),
+        ]);
+
+        return [
+            ...$base,
+            'status' => $run->status,
+            'promotion_run_id' => $run->id,
+            'promoted_count' => (int) ($run->promoted_count ?? 0),
+            'exception_count' => (int) ($run->exception_count ?? 0),
+            'message' => match ($state) {
+                'finalized' => 'Promotion completed.',
+                'manual_pending' => 'A manually prepared promotion run is waiting for administrator action.',
+                'no_eligible_students' => 'No active students are eligible for promotion.',
+                'exceptions' => 'Promotion is waiting for unresolved exceptions.',
+                default => null,
+            },
+        ];
+    }
+
     private function prepareItem(
         PromotionRun $run,
         StudentAcademicPlacement $placement,
+        AcademicYear $sourceYear,
         AcademicYear $targetYear,
         AcademicTerm $targetTerm,
-    ): void {
+    ): PromotionRunItem {
         $fromYearLevel = $placement->yearLevel;
-        $toYearLevel = YearLevel::query()
-            ->where('level', '>', $fromYearLevel->level)
-            ->orderBy('level')
-            ->first();
+        $toYearLevel = $fromYearLevel === null
+            ? null
+            : YearLevel::query()
+                ->where('level', '>', $fromYearLevel->level)
+                ->orderBy('level')
+                ->first();
 
         $majorId = $placement->major_id;
         $exceptionCode = null;
@@ -446,30 +697,24 @@ final class PromotionService
         if ($toYearLevel === null) {
             $exceptionCode = 'terminal_year_level';
             $exceptionMessage = 'No higher year level is configured for promotion.';
-        } elseif ($majorId === null && $toYearLevel->level >= self::MAJOR_START_LEVEL && $this->programHasMajors((int) $placement->program_id)) {
+        } elseif (
+            $majorId === null
+            && $toYearLevel->level >= self::MAJOR_START_LEVEL
+            && $this->programHasMajors((int) $placement->program_id)
+        ) {
             $selection = StudentMajorSelection::query()
                 ->where('student_id', $placement->student_id)
-                ->where('academic_year_id', $targetYear->id)
+                ->whereIn('academic_year_id', [$targetYear->id, $sourceYear->id])
+                ->whereIn('status', ['submitted', 'approved'])
+                ->orderByRaw('CASE WHEN academic_year_id = ? THEN 0 ELSE 1 END', [$targetYear->id])
+                ->latest('id')
                 ->first();
 
-            if ($selection !== null && $selection->status === 'approved') {
-                $majorId = $selection->major_id;
-            } elseif ($selection !== null && $selection->status === 'submitted') {
-                $exceptionCode = 'major_selection_pending';
-                $exceptionMessage = 'The student major selection is awaiting review.';
+            if ($selection === null) {
+                $exceptionCode = 'major_required';
+                $exceptionMessage = 'The student must select a major before promotion.';
             } else {
-                $fallback = StudentMajorSelection::query()
-                    ->where('student_id', $placement->student_id)
-                    ->where('status', 'approved')
-                    ->latest('academic_year_id')
-                    ->first();
-
-                if ($fallback !== null) {
-                    $majorId = $fallback->major_id;
-                } else {
-                    $exceptionCode = 'major_required';
-                    $exceptionMessage = 'The student must select a major before promotion.';
-                }
+                $majorId = $selection->major_id;
             }
         }
 
@@ -481,18 +726,36 @@ final class PromotionService
             $exceptionMessage = 'The student already has a placement for the target term.';
         }
 
-        PromotionRunItem::create([
-            'promotion_run_id' => $run->id,
-            'student_id' => $placement->student_id,
-            'from_placement_id' => $placement->id,
-            'from_year_level_id' => $placement->year_level_id,
-            'to_year_level_id' => $toYearLevel?->id,
-            'major_id' => $majorId,
-            'section_id' => null,
-            'status' => $exceptionCode === null ? 'ready' : 'exception',
-            'exception_code' => $exceptionCode,
-            'exception_message' => $exceptionMessage,
-        ]);
+        return PromotionRunItem::updateOrCreate(
+            [
+                'promotion_run_id' => $run->id,
+                'student_id' => $placement->student_id,
+            ],
+            [
+                'from_placement_id' => $placement->id,
+                'from_year_level_id' => $placement->year_level_id,
+                'to_year_level_id' => $toYearLevel?->id,
+                'major_id' => $majorId,
+                'section_id' => null,
+                'status' => $exceptionCode === null ? 'ready' : 'exception',
+                'exception_code' => $exceptionCode,
+                'exception_message' => $exceptionMessage,
+            ],
+        );
+    }
+
+    private function sourcePlacements(AcademicYear $sourceYear): Collection
+    {
+        return StudentAcademicPlacement::query()
+            ->with(['student.user', 'program', 'yearLevel', 'major'])
+            ->where('academic_year_id', $sourceYear->id)
+            ->where('is_current', true)
+            ->where('status', 'active')
+            ->whereHas('student', fn ($query) => $query
+                ->where('status', 'active')
+                ->whereHas('user', fn ($userQuery) => $userQuery->where('status', 'active')))
+            ->orderBy('student_id')
+            ->get();
     }
 
     private function programHasMajors(int $programId): bool
@@ -503,17 +766,44 @@ final class PromotionService
             ->exists();
     }
 
-    private function remainingCapacity(
-        Section $section,
-        PromotionRun $run,
-    ): ?int {
-        if ($section->capacity === null) {
-            return null;
-        }
+    /**
+     * @param  Collection<int, Section>  $sections
+     * @param  array<int, int|null>  $remaining
+     */
+    private function nextSection(Collection $sections, array $remaining): ?Section
+    {
+        return $sections
+            ->filter(fn (Section $section): bool => $remaining[$section->id] === null || $remaining[$section->id] > 0)
+            ->sort(function (Section $left, Section $right) use ($remaining): int {
+                $leftRemaining = $remaining[$left->id];
+                $rightRemaining = $remaining[$right->id];
 
-        $occupied = $this->sections->occupiedSeats($section, $run->targetTerm);
+                if ($leftRemaining === null && $rightRemaining === null) {
+                    return [$left->code, $left->id] <=> [$right->code, $right->id];
+                }
 
-        return max(0, $section->capacity - $occupied);
+                if ($leftRemaining === null) {
+                    return 1;
+                }
+
+                if ($rightRemaining === null) {
+                    return -1;
+                }
+
+                $leftRatio = $left->capacity === null || $left->capacity === 0
+                    ? 0.0
+                    : $leftRemaining / $left->capacity;
+                $rightRatio = $right->capacity === null || $right->capacity === 0
+                    ? 0.0
+                    : $rightRemaining / $right->capacity;
+
+                if ($leftRatio === $rightRatio) {
+                    return [$left->code, $left->id] <=> [$right->code, $right->id];
+                }
+
+                return $rightRatio <=> $leftRatio;
+            })
+            ->first();
     }
 
     private function assertSectionMatches(

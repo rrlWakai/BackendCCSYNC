@@ -37,6 +37,7 @@ final class StudentPlacementController extends Controller
         return ApiResponse::success([
             'current_placement' => $current === null ? null : $this->placements->toArray($current),
             'placement_history' => $history->map(fn (StudentAcademicPlacement $placement): array => $this->placements->toArray($placement))->all(),
+            'major_selection_eligibility' => $this->selections->eligibilityFor($student),
             'major_selection_periods' => $this->selections->openPeriodsFor($student)
                 ->map(fn (MajorSelectionPeriod $period): array => $this->periodArray($period))
                 ->all(),

@@ -17,6 +17,7 @@ final class SectionAllocationService
         int $programId,
         int $yearLevelId,
         ?int $majorId,
+        bool $lock = false,
     ): Collection {
         return Section::query()
             ->where('academic_term_id', $term->id)
@@ -30,6 +31,7 @@ final class SectionAllocationService
             ->where('status', 'active')
             ->orderBy('code')
             ->orderBy('id')
+            ->when($lock, fn ($query) => $query->lockForUpdate())
             ->get();
     }
 
@@ -88,12 +90,17 @@ final class SectionAllocationService
                     $first->major_id === null ? null : (int) $first->major_id,
                 );
 
+                $occupied = $sections->mapWithKeys(fn (Section $section): array => [
+                    $section->id => $this->occupiedSeats($section, $term),
+                ])->all();
+
                 return $this->summarizeGroup(
                     (int) $first->program_id,
                     (int) $first->year_level_id,
                     $first->major_id === null ? null : (int) $first->major_id,
                     $group->count(),
                     $sections,
+                    $occupied,
                 );
             })
             ->values()
@@ -112,6 +119,7 @@ final class SectionAllocationService
 
     /**
      * @param  Collection<int, Section>  $sections
+     * @param  array<int, int>  $occupiedSeats
      * @return array<string, mixed>
      */
     public function summarizeGroup(
@@ -120,6 +128,7 @@ final class SectionAllocationService
         ?int $majorId,
         int $studentCount,
         Collection $sections,
+        array $occupiedSeats = [],
     ): array {
         $capacities = $sections
             ->pluck('capacity')
@@ -133,8 +142,12 @@ final class SectionAllocationService
             : (int) ceil($studentCount / $referenceCapacity);
 
         $capacityConfigured = $sections->every(fn (Section $section): bool => $section->capacity !== null);
-        $availableSeats = $sections->sum(fn (Section $section): int => $section->capacity ?? 0);
-        $shortageSeats = max(0, $studentCount - $availableSeats);
+        $hasUnlimitedSection = $sections->contains(fn (Section $section): bool => $section->capacity === null);
+        $occupiedTotal = $sections->sum(fn (Section $section): int => $occupiedSeats[$section->id] ?? 0);
+        $availableSeats = $sections->sum(fn (Section $section): int => $section->capacity === null
+            ? 0
+            : max(0, $section->capacity - ($occupiedSeats[$section->id] ?? 0)));
+        $shortageSeats = $hasUnlimitedSection ? 0 : max(0, $studentCount - $availableSeats);
 
         return [
             'program_id' => $programId,
@@ -147,11 +160,17 @@ final class SectionAllocationService
             'shortage_sections' => max(0, $requiredSections - $sections->count()),
             'shortage_seats' => $shortageSeats,
             'capacity_configured' => $capacityConfigured,
+            'occupied_seats' => $occupiedTotal,
+            'available_seats' => $hasUnlimitedSection ? null : $availableSeats,
             'sections' => $sections->map(fn (Section $section): array => [
                 'id' => $section->id,
                 'code' => $section->code,
                 'name' => $section->name,
                 'capacity' => $section->capacity,
+                'occupied_seats' => $occupiedSeats[$section->id] ?? 0,
+                'available_seats' => $section->capacity === null
+                    ? null
+                    : max(0, $section->capacity - ($occupiedSeats[$section->id] ?? 0)),
             ])->values()->all(),
         ];
     }

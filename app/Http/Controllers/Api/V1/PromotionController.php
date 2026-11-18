@@ -49,7 +49,7 @@ final class PromotionController extends Controller
             $query->where('source_academic_year_id', $request->integer('academic_year_id'));
         }
 
-        $result = AcademicDirectory::paginate($query, $request, [], []);
+        $result = AcademicDirectory::paginate($query->orderByDesc('id'), $request, [], []);
 
         return ApiResponse::success([
             'promotion_runs' => $result['items'],

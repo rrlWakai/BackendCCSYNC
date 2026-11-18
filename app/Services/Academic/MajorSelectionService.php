@@ -17,6 +17,8 @@ use Illuminate\Validation\ValidationException;
 
 final class MajorSelectionService
 {
+    private const MAJOR_START_LEVEL = 3;
+
     public function nextYearLevelFor(Student $student): ?YearLevel
     {
         $placement = $this->currentPlacement($student);
@@ -32,24 +34,119 @@ final class MajorSelectionService
     }
 
     /**
+     * @return array{
+     *     eligible: bool,
+     *     reason: string|null,
+     *     current_year_level: array<string, mixed>|null,
+     *     target_year_level: array<string, mixed>|null,
+     *     has_major: bool
+     * }
+     */
+    public function eligibilityFor(Student $student): array
+    {
+        $placement = $this->currentPlacement($student);
+        $currentLevel = $placement?->yearLevel;
+
+        $result = [
+            'eligible' => false,
+            'reason' => 'placement_missing',
+            'current_year_level' => $currentLevel === null ? null : [
+                'id' => $currentLevel->id,
+                'level' => $currentLevel->level,
+                'name' => $currentLevel->name,
+            ],
+            'target_year_level' => null,
+            'has_major' => $placement?->major_id !== null,
+        ];
+
+        if ($placement === null || $currentLevel === null) {
+            return $result;
+        }
+
+        if ($placement->major_id !== null) {
+            $result['reason'] = 'major_already_assigned';
+
+            return $result;
+        }
+
+        if ($currentLevel->level < 2) {
+            $result['reason'] = 'not_yet_eligible';
+
+            return $result;
+        }
+
+        if ($currentLevel->level > self::MAJOR_START_LEVEL) {
+            $result['reason'] = 'not_eligible';
+
+            return $result;
+        }
+
+        if ($currentLevel->level === 2) {
+            $nextLevel = $this->nextYearLevelFor($student);
+
+            if ($nextLevel === null || $nextLevel->level !== self::MAJOR_START_LEVEL) {
+                $result['reason'] = 'target_level_missing';
+
+                return $result;
+            }
+
+            $targetLevel = $nextLevel;
+        } else {
+            $targetLevel = $currentLevel;
+        }
+
+        $result['eligible'] = true;
+        $result['reason'] = null;
+        $result['target_year_level'] = [
+            'id' => $targetLevel->id,
+            'level' => $targetLevel->level,
+            'name' => $targetLevel->name,
+        ];
+
+        return $result;
+    }
+
+    /**
      * @return Collection<int, MajorSelectionPeriod>
      */
     public function openPeriodsFor(Student $student): Collection
     {
         $placement = $this->currentPlacement($student);
-        $targetLevelIds = $this->eligibleTargetLevelIds($student);
+        $eligibility = $this->eligibilityFor($student);
+        $targetLevel = $eligibility['target_year_level'];
 
-        if ($placement === null || $targetLevelIds === []) {
+        if (
+            ! $eligibility['eligible']
+            || $targetLevel === null
+            || $placement === null
+            || $placement->yearLevel === null
+            || $placement->academicYear === null
+        ) {
             return new Collection;
         }
 
-        return MajorSelectionPeriod::query()
+        $query = MajorSelectionPeriod::query()
             ->with(['academicYear', 'program', 'targetYearLevel'])
             ->where('program_id', $placement->program_id)
-            ->whereIn('target_year_level_id', $targetLevelIds)
+            ->where('target_year_level_id', $targetLevel['id'])
             ->whereIn('status', ['planned', 'active'])
             ->where('opens_at', '<=', now())
-            ->where('closes_at', '>=', now())
+            ->where('closes_at', '>=', now());
+
+        if ($placement->yearLevel->level === 2) {
+            $nextAcademicYear = $this->nextAcademicYearFor($placement->academicYear);
+
+            if ($nextAcademicYear === null) {
+                return new Collection;
+            }
+
+            $query->where('academic_year_id', $nextAcademicYear->id);
+        } else {
+            $query->whereHas('academicYear', fn ($academicYearQuery) => $academicYearQuery
+                ->where('starts_on', '>=', $placement->academicYear->starts_on));
+        }
+
+        return $query
             ->orderBy('closes_at')
             ->get();
     }
@@ -74,17 +171,15 @@ final class MajorSelectionService
 
     public function currentSelectionFor(Student $student, ?AcademicYear $academicYear = null): ?StudentMajorSelection
     {
-        $academicYear ??= $this->currentAcademicYear($student);
+        $query = StudentMajorSelection::query()
+            ->with(['major', 'academicYear', 'period'])
+            ->where('student_id', $student->id);
 
-        if ($academicYear === null) {
-            return null;
+        if ($academicYear !== null) {
+            $query->where('academic_year_id', $academicYear->id);
         }
 
-        return StudentMajorSelection::query()
-            ->with(['major', 'academicYear', 'period'])
-            ->where('student_id', $student->id)
-            ->where('academic_year_id', $academicYear->id)
-            ->first();
+        return $query->latest('id')->first();
     }
 
     public function submit(
@@ -94,7 +189,10 @@ final class MajorSelectionService
         ?User $actor = null,
     ): StudentMajorSelection {
         return DB::transaction(function () use ($student, $period, $majorId, $actor): StudentMajorSelection {
-            $period = MajorSelectionPeriod::query()->lockForUpdate()->findOrFail($period->id);
+            $period = MajorSelectionPeriod::query()
+                ->with('academicYear')
+                ->lockForUpdate()
+                ->findOrFail($period->id);
 
             if (! in_array($period->status, ['planned', 'active'], true)) {
                 throw ValidationException::withMessages([
@@ -122,11 +220,22 @@ final class MajorSelectionService
                 ]);
             }
 
-            $nextLevel = $this->nextYearLevelFor($student);
-            $eligibleTargets = $this->eligibleTargetLevelIds($student);
-            if ($nextLevel === null || ! in_array((int) $period->target_year_level_id, $eligibleTargets, true)) {
+            $eligibility = $this->eligibilityFor($student);
+            $targetLevel = $eligibility['target_year_level'];
+
+            if (
+                ! $eligibility['eligible']
+                || $targetLevel === null
+                || (int) $period->target_year_level_id !== (int) $targetLevel['id']
+            ) {
                 throw ValidationException::withMessages([
-                    'period_id' => 'This major selection period does not match your next year level.',
+                    'period_id' => 'This major selection period does not match your third-year transition.',
+                ]);
+            }
+
+            if (! $this->periodAcademicYearIsEligible($period, $placement)) {
+                throw ValidationException::withMessages([
+                    'period_id' => 'This major selection period is not associated with your eligible academic year.',
                 ]);
             }
 
@@ -214,6 +323,81 @@ final class MajorSelectionService
         }, attempts: 3);
     }
 
+    public function correct(
+        StudentMajorSelection $selection,
+        int $majorId,
+        User $actor,
+        string $reason,
+    ): StudentMajorSelection {
+        $reason = trim($reason);
+
+        if ($reason === '') {
+            throw ValidationException::withMessages([
+                'reason' => 'A correction reason is required.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($selection, $majorId, $actor, $reason): StudentMajorSelection {
+            $selection = StudentMajorSelection::query()->lockForUpdate()->findOrFail($selection->id);
+
+            $major = Major::query()
+                ->whereKey($majorId)
+                ->where('program_id', $selection->program_id)
+                ->where('status', 'active')
+                ->first();
+
+            if ($major === null) {
+                throw ValidationException::withMessages([
+                    'major_id' => 'Choose an active major offered by the student program.',
+                ]);
+            }
+
+            if ((int) $selection->major_id === (int) $major->id) {
+                throw ValidationException::withMessages([
+                    'major_id' => 'Choose a different major for this correction.',
+                ]);
+            }
+
+            $previousMajorId = $selection->major_id;
+
+            $selection->update([
+                'major_id' => $major->id,
+                'status' => 'approved',
+                'reviewed_by' => $actor->id,
+                'reviewed_at' => now(),
+                'remarks' => $reason,
+            ]);
+
+            StudentMajorSelectionChange::create([
+                'student_major_selection_id' => $selection->id,
+                'previous_major_id' => $previousMajorId,
+                'new_major_id' => $major->id,
+                'changed_by' => $actor->id,
+                'reason' => $reason,
+            ]);
+
+            return $selection->refresh()->load([
+                'student.user:id,name,email',
+                'major',
+                'academicYear',
+                'period',
+                'reviewer:id,name',
+            ]);
+        }, attempts: 3);
+    }
+
+    public function selectedMajorFor(Student $student, AcademicYear $academicYear): ?Major
+    {
+        return StudentMajorSelection::query()
+            ->with('major')
+            ->where('student_id', $student->id)
+            ->where('academic_year_id', $academicYear->id)
+            ->whereIn('status', ['submitted', 'approved'])
+            ->latest('id')
+            ->first()
+            ?->major;
+    }
+
     public function approvedMajorFor(Student $student, AcademicYear $academicYear): ?Major
     {
         return StudentMajorSelection::query()
@@ -229,7 +413,7 @@ final class MajorSelectionService
     {
         if ($student->current_placement_id !== null) {
             $placement = StudentAcademicPlacement::query()
-                ->with(['yearLevel', 'major', 'section'])
+                ->with(['academicYear', 'yearLevel', 'major', 'section'])
                 ->find($student->current_placement_id);
 
             if ($placement !== null) {
@@ -238,18 +422,11 @@ final class MajorSelectionService
         }
 
         return StudentAcademicPlacement::query()
-            ->with(['yearLevel', 'major', 'section'])
+            ->with(['academicYear', 'yearLevel', 'major', 'section'])
             ->where('student_id', $student->id)
             ->where('is_current', true)
             ->latest('id')
             ->first();
-    }
-
-    private function currentAcademicYear(Student $student): ?AcademicYear
-    {
-        $placement = $this->currentPlacement($student);
-
-        return $placement?->academicYear;
     }
 
     /**
@@ -257,23 +434,47 @@ final class MajorSelectionService
      */
     private function eligibleTargetLevelIds(Student $student): array
     {
-        $placement = $this->currentPlacement($student);
+        $eligibility = $this->eligibilityFor($student);
 
-        if ($placement === null || $placement->yearLevel === null) {
+        if (! $eligibility['eligible'] || $eligibility['target_year_level'] === null) {
             return [];
         }
 
-        $ids = [];
+        return [(int) $eligibility['target_year_level']['id']];
+    }
 
-        $nextLevel = $this->nextYearLevelFor($student);
-        if ($nextLevel !== null) {
-            $ids[] = (int) $nextLevel->id;
+    private function periodAcademicYearIsEligible(
+        MajorSelectionPeriod $period,
+        StudentAcademicPlacement $placement,
+    ): bool {
+        if (
+            $period->academicYear === null
+            || $placement->academicYear === null
+            || $placement->yearLevel === null
+        ) {
+            return false;
         }
 
-        if ($placement->yearLevel->level >= 3 && $placement->major_id === null) {
-            $ids[] = (int) $placement->year_level_id;
+        if ($placement->yearLevel->level === 2) {
+            $nextAcademicYear = $this->nextAcademicYearFor($placement->academicYear);
+
+            return $nextAcademicYear !== null
+                && (int) $period->academic_year_id === (int) $nextAcademicYear->id;
         }
 
-        return array_values(array_unique($ids));
+        if ($placement->yearLevel->level === self::MAJOR_START_LEVEL) {
+            return $period->academicYear->starts_on->greaterThanOrEqualTo($placement->academicYear->starts_on);
+        }
+
+        return false;
+    }
+
+    private function nextAcademicYearFor(AcademicYear $academicYear): ?AcademicYear
+    {
+        return AcademicYear::query()
+            ->where('id', '!=', $academicYear->id)
+            ->where('starts_on', '>', $academicYear->starts_on)
+            ->orderBy('starts_on')
+            ->first();
     }
 }
