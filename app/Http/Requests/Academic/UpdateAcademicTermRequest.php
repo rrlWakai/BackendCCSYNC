@@ -21,7 +21,8 @@ final class UpdateAcademicTermRequest extends FormRequest
         $classification = $this->input('term', $term->term);
 
         return [
-            'academic_year' => ['sometimes', 'required', 'string', 'regex:/^\d{4}-\d{4}$/', Rule::unique('academic_terms')->where(fn ($query) => $query->where('term', $classification))->ignore($term)],
+            'academic_year_id' => ['sometimes', 'nullable', 'integer', Rule::exists('academic_years', 'id')],
+            'academic_year' => ['sometimes', 'string', 'regex:/^\d{4}-\d{4}$/', Rule::unique('academic_terms')->where(fn ($query) => $query->where('term', $classification))->ignore($term)],
             'term' => ['sometimes', 'required', Rule::in(['first', 'second', 'summer']), Rule::unique('academic_terms', 'term')->where(fn ($query) => $query->where('academic_year', $academicYear))->ignore($term)],
             'name' => ['sometimes', 'required', 'string', 'max:80'],
             'starts_on' => ['sometimes', 'required', 'date'],

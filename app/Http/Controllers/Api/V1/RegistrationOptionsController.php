@@ -20,7 +20,8 @@ final class RegistrationOptionsController extends Controller
             ->whereHas('academicTerm', fn ($query) => $query
                 ->where('status', 'active')
                 ->where('is_current', true))
-            ->with(['program:id,code,name', 'yearLevel:id,level,name'])
+            ->with(['program:id,code,name', 'yearLevel:id,level,name', 'major:id,program_id,code,name'])
+            ->withCount(['placements as occupied_seats_count' => fn ($query) => $query->where('status', 'active')])
             ->orderBy('program_id')
             ->orderBy('year_level_id')
             ->orderBy('code')
@@ -43,6 +44,12 @@ final class RegistrationOptionsController extends Controller
                 'name' => $section->name,
                 'program_id' => $section->program_id,
                 'year_level_id' => $section->year_level_id,
+                'major_id' => $section->major_id,
+                'capacity' => $section->capacity,
+                'occupied_seats' => (int) ($section->occupied_seats_count ?? 0),
+                'available_seats' => $section->capacity === null
+                    ? null
+                    : max(0, $section->capacity - (int) ($section->occupied_seats_count ?? 0)),
                 'program' => [
                     'code' => $section->program->code,
                     'name' => $section->program->name,
@@ -50,6 +57,11 @@ final class RegistrationOptionsController extends Controller
                 'year_level' => [
                     'level' => $section->yearLevel->level,
                     'name' => $section->yearLevel->name,
+                ],
+                'major' => $section->major === null ? null : [
+                    'id' => $section->major->id,
+                    'code' => $section->major->code,
+                    'name' => $section->major->name,
                 ],
             ])->values(),
             'departments' => Department::query()

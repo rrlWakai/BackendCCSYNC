@@ -7,6 +7,7 @@ use App\Http\Requests\Academic\IndexAcademicRequest;
 use App\Http\Requests\Academic\StoreSectionRequest;
 use App\Http\Requests\Academic\UpdateSectionRequest;
 use App\Models\AcademicTerm;
+use App\Models\Major;
 use App\Models\Program;
 use App\Models\Section;
 use App\Models\YearLevel;
@@ -22,12 +23,13 @@ final class SectionController extends Controller
     {
         Gate::authorize('viewAny', Section::class);
         $result = AcademicDirectory::paginate(
-            Section::query()->with(['program:id,code,name', 'yearLevel:id,level,name', 'academicTerm:id,academic_year,term,name']),
+            Section::query()->with(['program:id,code,name', 'yearLevel:id,level,name', 'major:id,program_id,code,name', 'academicTerm:id,academic_year,term,name']),
             $request,
             ['code', 'name'],
             [
                 'program_id' => 'program_id',
                 'year_level_id' => 'year_level_id',
+                'major_id' => 'major_id',
                 'academic_term_id' => 'academic_term_id',
                 'status' => 'status',
             ],
@@ -46,7 +48,7 @@ final class SectionController extends Controller
         $section = Section::create($attributes);
 
         return ApiResponse::success(
-            ['section' => $section->load(['program', 'yearLevel', 'academicTerm'])],
+            ['section' => $section->load(['program', 'yearLevel', 'major', 'academicTerm'])],
             'Section created.',
             201,
         );
@@ -56,7 +58,7 @@ final class SectionController extends Controller
     {
         Gate::authorize('view', $section);
 
-        return ApiResponse::success(['section' => $section->load(['program', 'yearLevel', 'academicTerm'])], 'Section loaded.');
+        return ApiResponse::success(['section' => $section->load(['program', 'yearLevel', 'major', 'academicTerm'])], 'Section loaded.');
     }
 
     public function update(UpdateSectionRequest $request, Section $section): JsonResponse
@@ -76,7 +78,7 @@ final class SectionController extends Controller
 
         $section->update($attributes);
 
-        return ApiResponse::success(['section' => $section->fresh()->load(['program', 'yearLevel', 'academicTerm'])], 'Section updated.');
+        return ApiResponse::success(['section' => $section->fresh()->load(['program', 'yearLevel', 'major', 'academicTerm'])], 'Section updated.');
     }
 
     /**
@@ -102,6 +104,18 @@ final class SectionController extends Controller
 
         if (isset($attributes['year_level_id']) && ! YearLevel::whereKey($attributes['year_level_id'])->exists()) {
             throw ValidationException::withMessages(['year_level_id' => 'Choose an existing year level.']);
+        }
+
+        $programId = $attributes['program_id'] ?? $section?->program_id;
+
+        if (array_key_exists('major_id', $attributes) && $attributes['major_id'] !== null) {
+            $major = Major::query()->find($attributes['major_id']);
+
+            if ($major === null || (int) $major->program_id !== (int) $programId) {
+                throw ValidationException::withMessages([
+                    'major_id' => 'The selected major must belong to the selected program.',
+                ]);
+            }
         }
     }
 }

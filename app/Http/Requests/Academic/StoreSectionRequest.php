@@ -26,6 +26,7 @@ final class StoreSectionRequest extends FormRequest
         return [
             'program_id' => ['required', 'integer', Rule::exists('programs', 'id')],
             'year_level_id' => ['required', 'integer', Rule::exists('year_levels', 'id')],
+            'major_id' => ['nullable', 'integer', Rule::exists('majors', 'id')],
             'academic_term_id' => ['required', 'integer', Rule::exists('academic_terms', 'id')],
             'code' => [
                 'required',

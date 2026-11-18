@@ -3,13 +3,19 @@
 use App\Http\Controllers\Api\V1\AcademicOptionsController;
 use App\Http\Controllers\Api\V1\AcademicProgramController;
 use App\Http\Controllers\Api\V1\AcademicTermController;
+use App\Http\Controllers\Api\V1\AcademicYearController;
 use App\Http\Controllers\Api\V1\ActivityController;
 use App\Http\Controllers\Api\V1\AnnouncementController;
 use App\Http\Controllers\Api\V1\AttendanceController;
 use App\Http\Controllers\Api\V1\AttendanceWorkflowController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\CurriculumRequirementController;
 use App\Http\Controllers\Api\V1\FacultyController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\MajorController;
+use App\Http\Controllers\Api\V1\MajorSelectionController;
+use App\Http\Controllers\Api\V1\MajorSelectionPeriodController;
+use App\Http\Controllers\Api\V1\PromotionController;
 use App\Http\Controllers\Api\V1\RoomController;
 use App\Http\Controllers\Api\V1\RoomMonitoringController;
 use App\Http\Controllers\Api\V1\RegistrationController;
@@ -17,6 +23,7 @@ use App\Http\Controllers\Api\V1\RegistrationOptionsController;
 use App\Http\Controllers\Api\V1\SchedulingController;
 use App\Http\Controllers\Api\V1\SectionController;
 use App\Http\Controllers\Api\V1\StudentController;
+use App\Http\Controllers\Api\V1\StudentPlacementController;
 use App\Http\Controllers\Api\V1\StudentScheduleConflictController;
 use App\Http\Controllers\Api\V1\SubjectController;
 use App\Http\Controllers\Api\V1\SubjectOfferingController;
@@ -84,6 +91,52 @@ Route::prefix('v1')
             ->name('academic.')
             ->group(function (): void {
                 Route::get('/options', AcademicOptionsController::class)->name('options');
+
+                Route::get('/academic-years', [AcademicYearController::class, 'index'])->name('academic-years.index');
+                Route::post('/academic-years', [AcademicYearController::class, 'store'])->name('academic-years.store');
+                Route::get('/academic-years/{academicYear}', [AcademicYearController::class, 'show'])->name('academic-years.show');
+                Route::patch('/academic-years/{academicYear}', [AcademicYearController::class, 'update'])->name('academic-years.update');
+
+                Route::get('/majors', [MajorController::class, 'index'])->name('majors.index');
+                Route::post('/majors', [MajorController::class, 'store'])->name('majors.store');
+                Route::get('/majors/{major}', [MajorController::class, 'show'])->name('majors.show');
+                Route::patch('/majors/{major}', [MajorController::class, 'update'])->name('majors.update');
+
+                Route::get('/curriculum/subjects', [CurriculumRequirementController::class, 'subjects'])
+                    ->name('curriculum.subjects');
+                Route::get('/curriculum-requirements', [CurriculumRequirementController::class, 'index'])
+                    ->name('curriculum-requirements.index');
+                Route::post('/curriculum-requirements', [CurriculumRequirementController::class, 'store'])
+                    ->name('curriculum-requirements.store');
+                Route::patch('/curriculum-requirements/{curriculumRequirement}', [CurriculumRequirementController::class, 'update'])
+                    ->name('curriculum-requirements.update');
+                Route::delete('/curriculum-requirements/{curriculumRequirement}', [CurriculumRequirementController::class, 'destroy'])
+                    ->name('curriculum-requirements.destroy');
+
+                Route::get('/major-selection-periods', [MajorSelectionPeriodController::class, 'index'])
+                    ->name('major-selection-periods.index');
+                Route::post('/major-selection-periods', [MajorSelectionPeriodController::class, 'store'])
+                    ->name('major-selection-periods.store');
+                Route::get('/major-selection-periods/{period}', [MajorSelectionPeriodController::class, 'show'])
+                    ->name('major-selection-periods.show');
+                Route::patch('/major-selection-periods/{period}', [MajorSelectionPeriodController::class, 'update'])
+                    ->name('major-selection-periods.update');
+
+                Route::get('/major-selections', [MajorSelectionController::class, 'index'])
+                    ->name('major-selections.index');
+                Route::patch('/major-selections/{selection}/review', [MajorSelectionController::class, 'review'])
+                    ->name('major-selections.review');
+
+                Route::get('/promotions/due', [PromotionController::class, 'due'])->name('promotions.due');
+                Route::get('/promotions', [PromotionController::class, 'index'])->name('promotions.index');
+                Route::post('/promotions', [PromotionController::class, 'store'])->name('promotions.store');
+                Route::get('/promotions/{promotionRun}', [PromotionController::class, 'show'])->name('promotions.show');
+                Route::patch('/promotions/{promotionRun}/items/{item}', [PromotionController::class, 'adjustItem'])
+                    ->name('promotions.items.update');
+                Route::post('/promotions/{promotionRun}/allocate', [PromotionController::class, 'allocate'])
+                    ->name('promotions.allocate');
+                Route::post('/promotions/{promotionRun}/finalize', [PromotionController::class, 'finalize'])
+                    ->name('promotions.finalize');
 
                 Route::get('/programs', [AcademicProgramController::class, 'index'])->name('programs.index');
                 Route::post('/programs', [AcademicProgramController::class, 'store'])->name('programs.store');
@@ -171,6 +224,12 @@ Route::prefix('v1')
                 Route::middleware('role:student')
                     ->get('/me', [StudentController::class, 'me'])
                     ->name('me');
+                Route::middleware('role:student')
+                    ->get('/me/placement', [StudentPlacementController::class, 'me'])
+                    ->name('me.placement');
+                Route::middleware('role:student')
+                    ->post('/me/major-selection/{period}', [StudentPlacementController::class, 'selectMajor'])
+                    ->name('me.major-selection');
                 Route::get('/{student}', [StudentController::class, 'show'])->name('show');
             });
 

@@ -24,7 +24,14 @@ final class StudentController extends Controller
         $query = Student::query()
             ->select('students.*')
             ->join('users', 'users.id', '=', 'students.user_id')
-            ->with(['user:id,name,email,status,created_at', 'program:id,code,name,status'])
+            ->with([
+                'user:id,name,email,status,created_at',
+                'program:id,code,name,status',
+                'currentPlacement.academicYear:id,label,status',
+                'currentPlacement.yearLevel:id,level,name',
+                'currentPlacement.major:id,program_id,code,name',
+                'currentPlacement.section:id,code,name',
+            ])
             ->whereHas('user.role', fn ($roleQuery) => $roleQuery->where('code', Role::STUDENT));
 
         if (! empty($filters['search'])) {
@@ -42,6 +49,21 @@ final class StudentController extends Controller
 
         if (! empty($filters['program_id'])) {
             $query->where('students.program_id', $filters['program_id']);
+        }
+
+        if (! empty($filters['year_level_id'])) {
+            $query->whereHas('currentPlacement', fn (Builder $placement) => $placement
+                ->where('year_level_id', $filters['year_level_id']));
+        }
+
+        if (! empty($filters['major_id'])) {
+            $query->whereHas('currentPlacement', fn (Builder $placement) => $placement
+                ->where('major_id', $filters['major_id']));
+        }
+
+        if (! empty($filters['section_id'])) {
+            $query->whereHas('currentPlacement', fn (Builder $placement) => $placement
+                ->where('section_id', $filters['section_id']));
         }
 
         $students = $query
@@ -120,6 +142,23 @@ final class StudentController extends Controller
         return $student->load([
             'user:id,name,email,status,created_at',
             'program:id,code,name,status',
+            'currentPlacement.academicYear:id,label,status',
+            'currentPlacement.academicTerm:id,academic_year,term,name',
+            'currentPlacement.yearLevel:id,level,name',
+            'currentPlacement.major:id,program_id,code,name',
+            'currentPlacement.section:id,code,name',
+            'placements' => fn (HasMany $placements) => $placements
+                ->with([
+                    'academicYear:id,label,status',
+                    'academicTerm:id,academic_year,term,name',
+                    'yearLevel:id,level,name',
+                    'major:id,program_id,code,name',
+                    'section:id,code,name',
+                ])
+                ->orderByDesc('id'),
+            'majorSelections' => fn (HasMany $selections) => $selections
+                ->with(['major:id,program_id,code,name', 'academicYear:id,label,status'])
+                ->orderByDesc('id'),
             'enrollments' => $enrollmentQuery,
         ]);
     }

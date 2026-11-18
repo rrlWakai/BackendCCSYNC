@@ -19,6 +19,9 @@ final class IndexStudentsRequest extends FormRequest
             'search' => ['sometimes', 'nullable', 'string', 'max:100'],
             'status' => ['sometimes', 'nullable', Rule::in(['active', 'inactive', 'suspended'])],
             'program_id' => ['sometimes', 'nullable', 'integer', 'exists:programs,id'],
+            'year_level_id' => ['sometimes', 'nullable', 'integer', 'exists:year_levels,id'],
+            'major_id' => ['sometimes', 'nullable', 'integer', 'exists:majors,id'],
+            'section_id' => ['sometimes', 'nullable', 'integer', 'exists:sections,id'],
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
         ];

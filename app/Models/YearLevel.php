@@ -26,4 +26,19 @@ class YearLevel extends Model
     {
         return $this->hasMany(Section::class);
     }
+
+    public function curriculumRequirements(): HasMany
+    {
+        return $this->hasMany(CurriculumRequirement::class);
+    }
+
+    public function majorSelectionPeriods(): HasMany
+    {
+        return $this->hasMany(MajorSelectionPeriod::class, 'target_year_level_id');
+    }
+
+    public function placements(): HasMany
+    {
+        return $this->hasMany(StudentAcademicPlacement::class);
+    }
 }

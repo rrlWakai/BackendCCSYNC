@@ -3,13 +3,22 @@
 namespace App\Support;
 
 use App\Models\Student;
+use App\Models\StudentAcademicPlacement;
+use App\Models\StudentMajorSelection;
 use App\Models\SubjectOffering;
 
 final class StudentPresenter
 {
     public static function toDirectoryArray(Student $student): array
     {
-        $student->loadMissing(['user:id,name,email,status,created_at', 'program:id,code,name']);
+        $student->loadMissing([
+            'user:id,name,email,status,created_at',
+            'program:id,code,name',
+            'currentPlacement.academicYear:id,label,status',
+            'currentPlacement.yearLevel:id,level,name',
+            'currentPlacement.major:id,program_id,code,name',
+            'currentPlacement.section:id,code,name',
+        ]);
 
         return [
             'id' => $student->id,
@@ -22,6 +31,7 @@ final class StudentPresenter
             'admitted_on' => $student->admitted_on?->toDateString(),
             'created_at' => $student->created_at?->toIso8601String(),
             'program' => self::programArray($student),
+            'current_placement' => self::placementArray($student->currentPlacement),
         ];
     }
 
@@ -30,6 +40,10 @@ final class StudentPresenter
         $student->loadMissing([
             'user:id,name,email,status,created_at',
             'program:id,code,name',
+            'currentPlacement.academicYear:id,label,status',
+            'currentPlacement.yearLevel:id,level,name',
+            'currentPlacement.major:id,program_id,code,name',
+            'currentPlacement.section:id,code,name',
         ]);
 
         $result = [
@@ -42,6 +56,13 @@ final class StudentPresenter
             'admitted_on' => $student->admitted_on?->toDateString(),
             'created_at' => $student->created_at?->toIso8601String(),
             'program' => self::programArray($student),
+            'current_placement' => self::placementArray($student->currentPlacement),
+            'placements' => $student->placements
+                ->map(fn (StudentAcademicPlacement $placement): array => self::placementArray($placement))
+                ->all(),
+            'major_selections' => $student->majorSelections
+                ->map(fn (StudentMajorSelection $selection): array => self::majorSelectionArray($selection))
+                ->all(),
             'enrollments' => $student->enrollments
                 ->map(fn ($enrollment): array => [
                     'id' => $enrollment->id,
@@ -74,8 +95,67 @@ final class StudentPresenter
         ];
     }
 
-    private static function offeringArray(SubjectOffering $offering): array
+    private static function placementArray(?StudentAcademicPlacement $placement): ?array
     {
+        if ($placement === null) {
+            return null;
+        }
+
+        return [
+            'id' => $placement->id,
+            'status' => $placement->status,
+            'is_current' => $placement->is_current,
+            'effective_on' => $placement->effective_on?->toDateString(),
+            'ends_on' => $placement->ends_on?->toDateString(),
+            'academic_year' => $placement->academicYear === null ? null : [
+                'id' => $placement->academicYear->id,
+                'label' => $placement->academicYear->label,
+            ],
+            'academic_term' => $placement->academicTerm === null ? null : [
+                'id' => $placement->academicTerm->id,
+                'academic_year' => $placement->academicTerm->academic_year,
+                'term' => $placement->academicTerm->term,
+                'name' => $placement->academicTerm->name,
+            ],
+            'year_level' => $placement->yearLevel === null ? null : [
+                'id' => $placement->yearLevel->id,
+                'level' => $placement->yearLevel->level,
+                'name' => $placement->yearLevel->name,
+            ],
+            'major' => $placement->major === null ? null : [
+                'id' => $placement->major->id,
+                'code' => $placement->major->code,
+                'name' => $placement->major->name,
+            ],
+            'section' => $placement->section === null ? null : [
+                'id' => $placement->section->id,
+                'code' => $placement->section->code,
+                'name' => $placement->section->name,
+            ],
+        ];
+    }
+
+    private static function majorSelectionArray(StudentMajorSelection $selection): array
+    {
+        return [
+            'id' => $selection->id,
+            'status' => $selection->status,
+            'selected_at' => $selection->selected_at?->toIso8601String(),
+            'reviewed_at' => $selection->reviewed_at?->toIso8601String(),
+            'remarks' => $selection->remarks,
+            'major' => $selection->major === null ? null : [
+                'id' => $selection->major->id,
+                'code' => $selection->major->code,
+                'name' => $selection->major->name,
+            ],
+            'academic_year' => $selection->academicYear === null ? null : [
+                'id' => $selection->academicYear->id,
+                'label' => $selection->academicYear->label,
+            ],
+        ];
+    }
+
+    private static function offeringArray(SubjectOffering $offering): array    {
         $section = $offering->section;
 
         return [

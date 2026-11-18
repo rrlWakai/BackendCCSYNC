@@ -9,12 +9,22 @@ final class UserPresenter
 {
     public static function toArray(User $user): array
     {
-        $user->loadMissing(['role', 'student.program', 'professor.program']);
+        $user->loadMissing([
+            'role',
+            'student.program',
+            'student.currentPlacement.academicYear',
+            'student.currentPlacement.yearLevel',
+            'student.currentPlacement.major',
+            'student.currentPlacement.section',
+            'professor.program',
+        ]);
 
         $role = $user->role;
         $profile = null;
 
         if ($role?->code === Role::STUDENT && $user->student !== null) {
+            $placement = $user->student->currentPlacement;
+
             $profile = [
                 'type' => 'student',
                 'studentNumber' => $user->student->student_number,
@@ -23,6 +33,19 @@ final class UserPresenter
                     'name' => $user->student->program->name,
                 ],
                 'admittedOn' => $user->student->admitted_on?->toDateString(),
+                'academicYear' => $placement?->academicYear?->label,
+                'yearLevel' => $placement?->yearLevel === null ? null : [
+                    'level' => $placement->yearLevel->level,
+                    'name' => $placement->yearLevel->name,
+                ],
+                'major' => $placement?->major === null ? null : [
+                    'code' => $placement->major->code,
+                    'name' => $placement->major->name,
+                ],
+                'section' => $placement?->section === null ? null : [
+                    'code' => $placement->section->code,
+                    'name' => $placement->section->name,
+                ],
             ];
         }
 

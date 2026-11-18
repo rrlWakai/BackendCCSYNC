@@ -11,8 +11,10 @@ use App\Models\ProfessorRegistrationReview;
 use App\Models\Program;
 use App\Models\Role;
 use App\Models\Section;
+use App\Models\Student;
 use App\Models\User;
 use App\Models\YearLevel;
+use App\Services\Academic\PlacementService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,6 +26,8 @@ use Illuminate\Support\Str;
 
 final class RegistrationController extends Controller
 {
+    public function __construct(private readonly PlacementService $placements) {}
+
     public function registerStudent(RegisterStudentRequest $request): JsonResponse
     {
         $attributes = $request->validated();
@@ -60,6 +64,20 @@ final class RegistrationController extends Controller
                 ]);
             }
 
+            if ($section->capacity !== null) {
+                $assigned = Student::query()
+                    ->where('section_id', $section->id)
+                    ->where('status', 'active')
+                    ->lockForUpdate()
+                    ->count();
+
+                if ($assigned >= $section->capacity) {
+                    throw ValidationException::withMessages([
+                        'section_id' => 'The selected section is already at capacity.',
+                    ]);
+                }
+            }
+
             $role = Role::query()->where('code', Role::STUDENT)->firstOrFail();
             $user = User::create([
                 'role_id' => $role->id,
@@ -69,12 +87,14 @@ final class RegistrationController extends Controller
                 'status' => 'active',
             ]);
 
-            $user->student()->create([
+            $student = $user->student()->create([
                 'student_number' => $attributes['student_number'],
                 'program_id' => $program->id,
                 'section_id' => $section->id,
                 'status' => 'active',
             ]);
+
+            $this->placements->createInitialPlacement($student, $section, $academicTerm);
 
         });
 

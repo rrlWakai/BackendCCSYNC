@@ -17,6 +17,7 @@ class Student extends Model
         'student_number',
         'program_id',
         'section_id',
+        'current_placement_id',
         'admitted_on',
         'status',
     ];
@@ -41,6 +42,21 @@ class Student extends Model
     public function section(): BelongsTo
     {
         return $this->belongsTo(Section::class);
+    }
+
+    public function currentPlacement(): BelongsTo
+    {
+        return $this->belongsTo(StudentAcademicPlacement::class, 'current_placement_id');
+    }
+
+    public function placements(): HasMany
+    {
+        return $this->hasMany(StudentAcademicPlacement::class);
+    }
+
+    public function majorSelections(): HasMany
+    {
+        return $this->hasMany(StudentMajorSelection::class);
     }
 
     public function enrollments(): HasMany

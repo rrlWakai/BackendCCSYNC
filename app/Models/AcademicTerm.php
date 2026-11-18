@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class AcademicTerm extends Model
@@ -12,6 +13,7 @@ class AcademicTerm extends Model
     use HasFactory;
 
     protected $fillable = [
+        'academic_year_id',
         'academic_year',
         'term',
         'name',
@@ -35,9 +37,19 @@ class AcademicTerm extends Model
         return $query->where('is_current', true);
     }
 
+    public function academicYear(): BelongsTo
+    {
+        return $this->belongsTo(AcademicYear::class);
+    }
+
     public function sections(): HasMany
     {
         return $this->hasMany(Section::class);
+    }
+
+    public function placements(): HasMany
+    {
+        return $this->hasMany(StudentAcademicPlacement::class);
     }
 
     public function subjectOfferings(): HasMany

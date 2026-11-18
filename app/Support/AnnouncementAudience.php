@@ -223,6 +223,12 @@ final class AnnouncementAudience
         }
 
         if ($actor->hasRole(Role::STUDENT) && $actor->student !== null) {
+            $placementSectionId = $actor->student->currentPlacement?->section_id;
+
+            if ($placementSectionId !== null) {
+                return [(int) $placementSectionId];
+            }
+
             return StudentSubjectEnrollment::query()
                 ->where('student_id', $actor->student->id)
                 ->where('status', 'enrolled')

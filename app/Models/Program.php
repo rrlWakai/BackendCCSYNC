@@ -23,6 +23,21 @@ class Program extends Model
         return $this->hasMany(Section::class);
     }
 
+    public function majors(): HasMany
+    {
+        return $this->hasMany(Major::class);
+    }
+
+    public function curriculumRequirements(): HasMany
+    {
+        return $this->hasMany(CurriculumRequirement::class);
+    }
+
+    public function majorSelectionPeriods(): HasMany
+    {
+        return $this->hasMany(MajorSelectionPeriod::class);
+    }
+
     public function students(): HasMany
     {
         return $this->hasMany(Student::class);

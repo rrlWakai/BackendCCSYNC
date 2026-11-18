@@ -15,3 +15,7 @@ Schedule::command('attendance:process-deadlines')
 Schedule::command('rooms:process-checkouts')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('promotions:process-due')
+    ->dailyAt('01:00')
+    ->withoutOverlapping();

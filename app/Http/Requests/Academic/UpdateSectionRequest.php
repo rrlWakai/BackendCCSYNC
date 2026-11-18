@@ -29,6 +29,7 @@ final class UpdateSectionRequest extends FormRequest
         return [
             'program_id' => ['sometimes', 'required', 'integer', Rule::exists('programs', 'id')],
             'year_level_id' => ['sometimes', 'required', 'integer', Rule::exists('year_levels', 'id')],
+            'major_id' => ['sometimes', 'nullable', 'integer', Rule::exists('majors', 'id')],
             'academic_term_id' => ['sometimes', 'required', 'integer', Rule::exists('academic_terms', 'id')],
             'code' => [
                 'sometimes',

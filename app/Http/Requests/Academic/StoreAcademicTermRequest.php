@@ -23,7 +23,8 @@ final class StoreAcademicTermRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'academic_year' => ['required', 'string', 'regex:/^\d{4}-\d{4}$/', Rule::unique('academic_terms')->where(fn ($query) => $query->where('term', $this->input('term')))],
+            'academic_year_id' => ['sometimes', 'nullable', 'integer', Rule::exists('academic_years', 'id')],
+            'academic_year' => ['required_without:academic_year_id', 'string', 'regex:/^\d{4}-\d{4}$/', Rule::unique('academic_terms')->where(fn ($query) => $query->where('term', $this->input('term')))],
             'term' => ['required', Rule::in(['first', 'second', 'summer'])],
             'name' => ['required', 'string', 'max:80'],
             'starts_on' => ['required', 'date'],

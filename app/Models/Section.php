@@ -14,6 +14,7 @@ class Section extends Model
     protected $fillable = [
         'program_id',
         'year_level_id',
+        'major_id',
         'academic_term_id',
         'code',
         'name',
@@ -38,9 +39,19 @@ class Section extends Model
         return $this->belongsTo(YearLevel::class);
     }
 
+    public function major(): BelongsTo
+    {
+        return $this->belongsTo(Major::class);
+    }
+
     public function academicTerm(): BelongsTo
     {
         return $this->belongsTo(AcademicTerm::class);
+    }
+
+    public function placements(): HasMany
+    {
+        return $this->hasMany(StudentAcademicPlacement::class);
     }
 
     public function subjectOfferings(): HasMany
