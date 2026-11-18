@@ -72,7 +72,7 @@ final class SectionController extends Controller
             && $section->subjectOfferings()->exists()
         ) {
             throw ValidationException::withMessages([
-                'academic_term_id' => 'A section with subject offerings cannot be moved to another academic term.',
+                'academic_term_id' => 'A section with class assignments cannot be moved to another academic term.',
             ]);
         }
 

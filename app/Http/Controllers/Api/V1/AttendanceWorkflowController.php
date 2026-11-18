@@ -54,7 +54,7 @@ final class AttendanceWorkflowController extends Controller
             $result = $this->ledger->forOffering($offering);
         }
 
-        return ApiResponse::success($result, 'Offering attendance ledger loaded.');
+        return ApiResponse::success($result, 'Class assignment attendance ledger loaded.');
     }
 
     public function exportLedger(
@@ -241,7 +241,7 @@ final class AttendanceWorkflowController extends Controller
                 'per_page' => $requests->perPage(),
                 'total' => $requests->total(),
             ],
-        ], 'Offering excuse requests loaded.');
+        ], 'Class assignment excuse requests loaded.');
     }
 
     public function decideExcuse(Request $request, AttendanceExcuseRequest $excuse): JsonResponse
@@ -366,7 +366,7 @@ final class AttendanceWorkflowController extends Controller
                 ->where('academic_term_id', $attributes['academic_term_id'])
                 ->exists()) {
             throw ValidationException::withMessages([
-                'subject_offering_id' => 'The offering must belong to the selected academic term.',
+                'subject_offering_id' => 'The class assignment must belong to the selected academic term.',
             ]);
         }
 

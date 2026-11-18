@@ -15,17 +15,19 @@ final class SubjectOfferingManagementService
 {
     private const DIRECTORY_RELATIONS = [
         'academicTerm:id,academic_year,term,name,status,starts_on,ends_on',
-        'section:id,program_id,year_level_id,academic_term_id,code,name,capacity,status',
+        'section:id,program_id,year_level_id,major_id,academic_term_id,code,name,capacity,status',
         'section.program:id,code,name,status',
         'section.yearLevel:id,level,name',
+        'section.major:id,program_id,code,name',
         'subject:id,code,title,units,status',
     ];
 
     private const DETAIL_RELATIONS = [
         'academicTerm:id,academic_year,term,name,status,starts_on,ends_on',
-        'section:id,program_id,year_level_id,academic_term_id,code,name,capacity,status',
+        'section:id,program_id,year_level_id,major_id,academic_term_id,code,name,capacity,status',
         'section.program:id,code,name,status',
         'section.yearLevel:id,level,name',
+        'section.major:id,program_id,code,name',
         'subject:id,code,title,units,status',
     ];
 
@@ -36,7 +38,15 @@ final class SubjectOfferingManagementService
     public function directory(array $filters): array
     {
         $query = SubjectOffering::query()
-            ->with(self::DIRECTORY_RELATIONS)
+            ->with(array_merge(self::DIRECTORY_RELATIONS, [
+                'facultyAssignments' => fn (Relation $assignments) => $assignments
+                    ->where('status', 'active')
+                    ->with([
+                        'professor:id,user_id,employee_number,status',
+                        'professor.user:id,name,status',
+                    ])
+                    ->orderBy('id'),
+            ]))
             ->withCount([
                 'enrollments as enrolled_students_count' => fn (Builder $enrollments) => $enrollments
                     ->where('status', 'enrolled'),
@@ -57,6 +67,23 @@ final class SubjectOfferingManagementService
                 ->where('program_id', $filters['program_id']));
         }
 
+        if (! empty($filters['year_level_id'])) {
+            $query->whereHas('section', fn (Builder $sections) => $sections
+                ->where('year_level_id', $filters['year_level_id']));
+        }
+
+        if (($filters['assignment_status'] ?? null) === 'assigned') {
+            $query->where('status', '!=', 'cancelled')
+                ->whereHas('facultyAssignments', fn (Builder $assignments) => $assignments
+                    ->where('status', 'active'));
+        }
+
+        if (($filters['assignment_status'] ?? null) === 'incomplete') {
+            $query->where('status', '!=', 'cancelled')
+                ->whereDoesntHave('facultyAssignments', fn (Builder $assignments) => $assignments
+                    ->where('status', 'active'));
+        }
+
         $search = trim((string) ($filters['search'] ?? ''));
         if ($search !== '') {
             $query->where(function (Builder $searchQuery) use ($search): void {
@@ -69,7 +96,13 @@ final class SubjectOfferingManagementService
                         ->orWhere('name', 'like', '%'.$search.'%'))
                     ->orWhereHas('academicTerm', fn (Builder $terms) => $terms
                         ->where('name', 'like', '%'.$search.'%')
-                        ->orWhere('academic_year', 'like', '%'.$search.'%'));
+                        ->orWhere('academic_year', 'like', '%'.$search.'%'))
+                    ->orWhereHas('facultyAssignments', fn (Builder $assignments) => $assignments
+                        ->where('status', 'active')
+                        ->whereHas('professor', fn (Builder $professors) => $professors
+                            ->where('employee_number', 'like', '%'.$search.'%')
+                            ->orWhereHas('user', fn (Builder $users) => $users
+                                ->where('name', 'like', '%'.$search.'%'))));
             });
         }
 
@@ -85,6 +118,28 @@ final class SubjectOfferingManagementService
                 'per_page' => $paginator->perPage(),
                 'total' => $paginator->total(),
             ],
+        ];
+    }
+
+    /**
+     * @return array{total: int, assigned: int, incomplete: int}
+     */
+    public function summary(int $academicTermId): array
+    {
+        $base = SubjectOffering::query()
+            ->where('academic_term_id', $academicTermId)
+            ->where('status', '!=', 'cancelled');
+
+        $total = (clone $base)->count();
+        $assigned = (clone $base)
+            ->whereHas('facultyAssignments', fn (Builder $assignments) => $assignments
+                ->where('status', 'active'))
+            ->count();
+
+        return [
+            'total' => $total,
+            'assigned' => $assigned,
+            'incomplete' => max(0, $total - $assigned),
         ];
     }
 
@@ -148,20 +203,20 @@ final class SubjectOfferingManagementService
 
             if ($offering->status === 'cancelled') {
                 throw ValidationException::withMessages([
-                    'status' => 'Cancelled offerings are read-only and cannot be reopened.',
+                    'status' => 'Cancelled class assignments are read-only and cannot be reopened.',
                 ]);
             }
 
             if ($status === 'open') {
                 if ($offering->status === 'open') {
                     throw ValidationException::withMessages([
-                        'status' => 'This offering is already open.',
+                        'status' => 'This class assignment is already open.',
                     ]);
                 }
 
                 if (! in_array($offering->status, ['draft', 'closed'], true)) {
                     throw ValidationException::withMessages([
-                        'status' => 'Only draft or closed offerings can be opened.',
+                        'status' => 'Only draft or closed class assignments can be opened.',
                     ]);
                 }
 
@@ -171,13 +226,13 @@ final class SubjectOfferingManagementService
             if ($status === 'closed') {
                 if ($offering->status === 'closed') {
                     throw ValidationException::withMessages([
-                        'status' => 'This offering is already closed.',
+                        'status' => 'This class assignment is already closed.',
                     ]);
                 }
 
                 if ($offering->status !== 'open') {
                     throw ValidationException::withMessages([
-                        'status' => 'Only open offerings can be closed.',
+                        'status' => 'Only open class assignments can be closed.',
                     ]);
                 }
             }
@@ -222,13 +277,13 @@ final class SubjectOfferingManagementService
     {
         if ($offering->status === 'cancelled') {
             throw ValidationException::withMessages([
-                'status' => 'Cancelled offerings are read-only.',
+                'status' => 'Cancelled class assignments are read-only.',
             ]);
         }
 
         if ($offering->status === 'closed' && $attributes !== []) {
             throw ValidationException::withMessages([
-                'status' => 'Closed offerings are read-only. Reopen the offering before making changes.',
+                'status' => 'Closed class assignments are read-only. Reopen the class assignment before making changes.',
             ]);
         }
 
@@ -242,7 +297,7 @@ final class SubjectOfferingManagementService
                 && (int) $attributes[$field] !== (int) $offering->getAttribute($field)
             ) {
                 throw ValidationException::withMessages([
-                    $field => 'Only expected students can be changed while the offering is open.',
+                    $field => 'Only expected students can be changed while the class assignment is open.',
                 ]);
             }
         }
@@ -284,7 +339,7 @@ final class SubjectOfferingManagementService
 
         if ((int) $section->academic_term_id !== $termId) {
             throw ValidationException::withMessages([
-                'academic_term_id' => 'The offering term must match the selected section term.',
+                'academic_term_id' => 'The class assignment term must match the selected section term.',
             ]);
         }
     }
@@ -306,7 +361,7 @@ final class SubjectOfferingManagementService
 
         if ($query->exists()) {
             throw ValidationException::withMessages([
-                'subject_id' => 'This section already offers the selected subject in the chosen term.',
+                'subject_id' => 'This section already has the selected subject in the chosen term.',
             ]);
         }
     }
@@ -371,13 +426,13 @@ final class SubjectOfferingManagementService
             || ! in_array($offering->academicTerm->status, ['active', 'planned'], true)
         ) {
             throw ValidationException::withMessages([
-                'status' => 'The offering, section, program, subject, and term must be active or planned before it can be opened.',
+                'status' => 'The class assignment, section, program, subject, and term must be active or planned before it can be opened.',
             ]);
         }
 
         if ((int) $offering->section->academic_term_id !== (int) $offering->academic_term_id) {
             throw ValidationException::withMessages([
-                'status' => 'The offering term must match its section term before it can be opened.',
+                'status' => 'The class assignment term must match its section term before it can be opened.',
             ]);
         }
     }

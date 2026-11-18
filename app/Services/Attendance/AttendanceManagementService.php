@@ -121,7 +121,7 @@ final class AttendanceManagementService
 
                 if ($enrollment === null) {
                     throw ValidationException::withMessages([
-                        "records.{$index}.student_subject_enrollment_id" => 'The enrollment does not belong to this scheduled offering.',
+                        "records.{$index}.student_subject_enrollment_id" => 'The enrollment does not belong to this scheduled class assignment.',
                     ]);
                 }
 

@@ -21,6 +21,8 @@ final class IndexSubjectOfferingRequest extends ApiFormRequest
             'section_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'subject_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'program_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'year_level_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'assignment_status' => ['sometimes', 'nullable', Rule::in(['assigned', 'incomplete'])],
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
         ];

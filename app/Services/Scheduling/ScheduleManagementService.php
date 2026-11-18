@@ -45,7 +45,7 @@ final class ScheduleManagementService
                 ->where('schedule_type', $attributes['schedule_type'])
                 ->exists()) {
                 throw ValidationException::withMessages([
-                    'start_time' => 'A schedule with this offering, day, time, and type already exists.',
+                    'start_time' => 'A schedule with this class assignment, day, time, and type already exists.',
                 ]);
             }
 
@@ -77,7 +77,7 @@ final class ScheduleManagementService
                 ->whereKeyNot($lockedSchedule->id)
                 ->exists()) {
                 throw ValidationException::withMessages([
-                    'start_time' => 'A schedule with this offering, day, time, and type already exists.',
+                    'start_time' => 'A schedule with this class assignment, day, time, and type already exists.',
                 ]);
             }
             $lockedSchedule->update($attributes);
@@ -109,7 +109,7 @@ final class ScheduleManagementService
 
             if ($assignment !== null && $assignment->status !== 'cancelled') {
                 throw ValidationException::withMessages([
-                    'professor_id' => 'This professor already has an assignment with that role for the offering.',
+                    'professor_id' => 'This professor already has an assignment with that role for the class assignment.',
                 ]);
             }
 
@@ -177,7 +177,7 @@ final class ScheduleManagementService
 
             if ($facultyAssignment->subject_offering_id !== $lockedSchedule->subject_offering_id) {
                 throw ValidationException::withMessages([
-                    'faculty_assignment_id' => 'The faculty assignment must belong to this schedule’s subject offering.',
+                    'faculty_assignment_id' => 'The faculty assignment must belong to this schedule’s class assignment.',
                 ]);
             }
 
@@ -534,13 +534,13 @@ final class ScheduleManagementService
             || $offering->subject->status !== 'active'
             || $offering->section->program->status !== 'active') {
             throw ValidationException::withMessages([
-                'subject_offering_id' => 'The offering, section, program, subject, and term must be active or planned for scheduling.',
+                'subject_offering_id' => 'The class assignment, section, program, subject, and term must be active or planned for scheduling.',
             ]);
         }
 
         if ($offering->section->academic_term_id !== $offering->academic_term_id) {
             throw ValidationException::withMessages([
-                'subject_offering_id' => 'The offering term must match its section term.',
+                'subject_offering_id' => 'The class assignment term must match its section term.',
             ]);
         }
     }
@@ -582,7 +582,7 @@ final class ScheduleManagementService
         foreach ($assignments as $assignment) {
             if ($assignment->facultyAssignment->subject_offering_id !== $schedule->subject_offering_id) {
                 throw ValidationException::withMessages([
-                    'assignments' => 'Every scheduled instructor must be assigned to this subject offering.',
+                    'assignments' => 'Every scheduled instructor must be assigned to this class assignment.',
                 ]);
             }
             $professor = Professor::query()->lockForUpdate()
@@ -642,7 +642,7 @@ final class ScheduleManagementService
 
         if ($hasConflict) {
             throw ValidationException::withMessages([
-                $field => 'A subject offering can only have one distinct active professor across all assignment roles. Resolve the existing assignment conflict before continuing.',
+                $field => 'A class assignment can only have one distinct active professor across all assignment roles. Resolve the existing assignment conflict before continuing.',
             ]);
         }
     }
@@ -684,7 +684,7 @@ final class ScheduleManagementService
         }
         if ($offering->expected_students !== null && $room->capacity < $offering->expected_students) {
             throw ValidationException::withMessages([
-                'room_id' => 'The selected room capacity is below the offering’s expected enrollment.',
+                'room_id' => 'The selected room capacity is below the class assignment’s expected enrollment.',
             ]);
         }
     }

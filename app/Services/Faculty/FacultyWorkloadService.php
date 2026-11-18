@@ -77,7 +77,7 @@ final class FacultyWorkloadService
         foreach ($this->assignmentConflicts($offeringIds) as $offeringId => $professors) {
             $conflictIssues[$offeringId] = [
                 'code' => 'assignment_conflict',
-                'message' => 'Multiple distinct professors are actively assigned to this subject offering. Workload cannot be allocated until the assignment conflict is resolved.',
+                'message' => 'Multiple distinct professors are actively assigned to this class assignment. Workload cannot be allocated until the assignment conflict is resolved.',
                 'offering' => $offeringContexts[$offeringId] ?? null,
                 'professors' => $professors,
             ];

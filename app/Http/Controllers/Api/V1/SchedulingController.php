@@ -324,7 +324,7 @@ final class SchedulingController extends Controller
             ->map(SchedulePresenter::facultyAssignmentArray(...))
             ->all();
 
-        return ApiResponse::success(['assignments' => $assignments], 'Offering faculty assignments loaded.');
+        return ApiResponse::success(['assignments' => $assignments], 'Class assignment faculty assignments loaded.');
     }
 
     public function storeFacultyAssignment(StoreFacultyAssignmentRequest $request): JsonResponse

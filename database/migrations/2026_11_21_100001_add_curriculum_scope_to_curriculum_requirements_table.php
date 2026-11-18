@@ -38,9 +38,28 @@ return new class extends Migration
 
     public function down(): void
     {
+        $duplicateScopeCount = DB::table('curriculum_requirements')
+            ->select(['program_id', 'year_level_id', 'major_id', 'subject_id'])
+            ->whereNotNull('major_id')
+            ->groupBy(['program_id', 'year_level_id', 'major_id', 'subject_id'])
+            ->havingRaw('COUNT(*) > 1')
+            ->get()
+            ->count();
+
+        if ($duplicateScopeCount > 0) {
+            throw new \RuntimeException(sprintf(
+                'Cannot roll back the curriculum scope migration: %d curriculum requirement scope(s) would collide under the legacy unique index. Review and resolve duplicate program/year level/major/subject mappings manually before rolling back.',
+                $duplicateScopeCount,
+            ));
+        }
+
         Schema::table('curriculum_requirements', function (Blueprint $table) {
             $table->dropUnique('curriculum_requirements_scope_unique');
             $table->dropIndex('curriculum_requirements_term_index');
+        });
+
+        Schema::table('curriculum_requirements', function (Blueprint $table) {
+            $table->dropColumn(['semester', 'classification']);
         });
 
         Schema::table('curriculum_requirements', function (Blueprint $table) {
@@ -48,8 +67,6 @@ return new class extends Migration
                 ['program_id', 'year_level_id', 'major_id', 'subject_id'],
                 'curriculum_requirements_scope_unique',
             );
-
-            $table->dropColumn(['semester', 'classification']);
         });
     }
 };
