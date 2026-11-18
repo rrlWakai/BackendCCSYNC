@@ -35,5 +35,13 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('attendance-qr-manage', function (Request $request): Limit {
             return Limit::perMinute(30)->by((string) ($request->user()?->id ?? $request->ip()));
         });
+
+        RateLimiter::for('room-monitoring-scan', function (Request $request): Limit {
+            $key = $request->user()?->id !== null
+                ? 'user:'.$request->user()->id
+                : 'ip:'.$request->ip();
+
+            return Limit::perMinute(12)->by($key);
+        });
     }
 }

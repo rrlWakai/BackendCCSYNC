@@ -36,4 +36,14 @@ class Room extends Model
     {
         return $this->hasMany(ScheduleConflict::class);
     }
+
+    public function qrIdentities(): HasMany
+    {
+        return $this->hasMany(RoomQrIdentity::class);
+    }
+
+    public function occupancies(): HasMany
+    {
+        return $this->hasMany(RoomOccupancy::class);
+    }
 }

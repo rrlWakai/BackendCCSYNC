@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 Schedule::command('attendance:process-deadlines')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('rooms:process-checkouts')
+    ->everyMinute()
+    ->withoutOverlapping();

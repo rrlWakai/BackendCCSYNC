@@ -13,6 +13,7 @@ use App\Models\ScheduleConflict;
 use App\Models\Section;
 use App\Models\SubjectOffering;
 use App\Models\User;
+use App\Services\Rooms\RoomMonitoringService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -27,6 +28,8 @@ final class ScheduleManagementService
         'section.yearLevel',
         'subject',
     ];
+
+    public function __construct(private readonly RoomMonitoringService $roomMonitoring) {}
 
     public function createSchedule(array $attributes): ClassSchedule
     {
@@ -341,6 +344,7 @@ final class ScheduleManagementService
                 throw ValidationException::withMessages(['status' => 'This schedule is already cancelled.']);
             }
 
+            $this->roomMonitoring->closeForCancelledSchedule($lockedSchedule, $actor);
             $lockedSchedule->update(['status' => 'cancelled']);
             $lockedSchedule->scheduleAssignments()->where('status', 'active')
                 ->update(['status' => 'cancelled', 'is_primary' => false]);

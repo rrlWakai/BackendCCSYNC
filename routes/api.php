@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\FacultyController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\RoomController;
+use App\Http\Controllers\Api\V1\RoomMonitoringController;
 use App\Http\Controllers\Api\V1\RegistrationController;
 use App\Http\Controllers\Api\V1\RegistrationOptionsController;
 use App\Http\Controllers\Api\V1\SchedulingController;
@@ -127,11 +128,37 @@ Route::prefix('v1')
             ->prefix('rooms')
             ->name('rooms.')
             ->group(function (): void {
+                Route::get('/availability', [RoomMonitoringController::class, 'availability'])->name('availability');
+                Route::get('/discrepancies', [RoomMonitoringController::class, 'discrepancies'])->name('discrepancies');
                 Route::get('/', [RoomController::class, 'index'])->name('index');
                 Route::post('/', [RoomController::class, 'store'])->name('store');
+                Route::get('/{room}/qr', [RoomMonitoringController::class, 'qr'])->name('qr.show');
+                Route::get('/{room}/qr/history', [RoomMonitoringController::class, 'qrHistory'])->name('qr.history');
+                Route::post('/{room}/qr/regenerate', [RoomMonitoringController::class, 'regenerateQr'])
+                    ->middleware('role:administrator')
+                    ->name('qr.regenerate');
+                Route::post('/{room}/qr/revoke', [RoomMonitoringController::class, 'revokeQr'])
+                    ->middleware('role:administrator')
+                    ->name('qr.revoke');
+                Route::get('/{room}/occupancies', [RoomMonitoringController::class, 'history'])->name('occupancies');
                 Route::get('/{room}', [RoomController::class, 'show'])->name('show');
                 Route::patch('/{room}', [RoomController::class, 'update'])->name('update');
                 Route::patch('/{room}/status', [RoomController::class, 'updateStatus'])->name('status');
+                Route::post('/occupancies/{occupancy}/resolve-discrepancy', [RoomMonitoringController::class, 'resolveDiscrepancy'])
+                    ->middleware('role:administrator')
+                    ->name('occupancies.resolve-discrepancy');
+            });
+
+        Route::prefix('room-monitoring')
+            ->name('room-monitoring.')
+            ->middleware(['auth:sanctum', 'active', 'role:professor'])
+            ->group(function (): void {
+                Route::post('/preview', [RoomMonitoringController::class, 'preview'])
+                    ->middleware('throttle:room-monitoring-scan')
+                    ->name('preview');
+                Route::post('/check-in', [RoomMonitoringController::class, 'checkIn'])
+                    ->middleware('throttle:room-monitoring-scan')
+                    ->name('check-in');
             });
 
         Route::prefix('students')
