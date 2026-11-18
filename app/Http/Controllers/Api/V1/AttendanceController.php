@@ -90,7 +90,13 @@ final class AttendanceController extends Controller
         $actor = $request->user();
         $query = AttendanceSession::query()
             ->with(self::sessionRelations())
-            ->withCount('records');
+            ->withCount([
+                'records',
+                'records as present_count' => fn (Builder $records) => $records->where('status', 'present'),
+                'records as late_count' => fn (Builder $records) => $records->where('status', 'late'),
+                'records as absent_count' => fn (Builder $records) => $records->where('status', 'absent'),
+                'records as excused_count' => fn (Builder $records) => $records->where('status', 'excused'),
+            ]);
 
         if ($actor->hasRole('professor')) {
             $professorId = $actor->professor?->id;
@@ -101,6 +107,7 @@ final class AttendanceController extends Controller
         }
 
         $this->applySessionFilters($query, $filters);
+        $summary = $this->sessionSummary(clone $query);
 
         $sessions = $query
             ->orderByDesc('class_date')
@@ -111,7 +118,15 @@ final class AttendanceController extends Controller
             'sessions' => collect($sessions->items())->map(fn (AttendanceSession $session): array => [
                 ...AttendancePresenter::session($session),
                 'record_count' => $session->records_count,
+                'record_counts' => [
+                    'present' => (int) $session->present_count,
+                    'late' => (int) $session->late_count,
+                    'absent' => (int) $session->absent_count,
+                    'excused' => (int) $session->excused_count,
+                    'total' => (int) $session->records_count,
+                ],
             ])->all(),
+            'summary' => $summary,
             'pagination' => self::pagination($sessions),
         ], 'Attendance sessions loaded.');
     }
@@ -317,11 +332,37 @@ final class AttendanceController extends Controller
             ->orderBy('student_attendance.id')
             ->paginate($filters['per_page'] ?? 25);
 
-        return ApiResponse::success([
-            'records' => collect($records->items())->map(fn (StudentAttendance $record): array => [
+        $ledgers = [];
+        $items = collect($records->items())->map(function (StudentAttendance $record) use (&$ledgers): array {
+            $offering = $record->attendanceSession->classSchedule->subjectOffering;
+            $ledger = $ledgers[$offering->id] ??= $this->attendanceLedger->forOffering($offering);
+            $standing = collect($ledger['students'])->first(
+                fn (array $student): bool => $student['student']['student_subject_enrollment_id']
+                    === $record->student_subject_enrollment_id,
+            );
+
+            return [
                 'attendance' => AttendancePresenter::record($record),
                 'session' => AttendancePresenter::session($record->attendanceSession),
-            ])->all(),
+                'standing' => $standing === null ? null : [
+                    'present' => $standing['present'],
+                    'late' => $standing['late'],
+                    'absent' => $standing['absent'],
+                    'excused' => $standing['excused'],
+                    'late_absence_equivalents' => $standing['late_absence_equivalents'],
+                    'absence_equivalents' => $standing['absence_equivalents'],
+                    'eligible_meetings' => $standing['eligible_meetings'],
+                    'allowed_absences' => $standing['allowed_absences'],
+                    'remaining_absences' => $standing['remaining_absences'],
+                    'attendance_percentage' => $standing['attendance_percentage'],
+                    'weighted_contribution' => $standing['weighted_contribution'],
+                    'allowance_exceeded' => $standing['allowance_exceeded'],
+                ],
+            ];
+        })->all();
+
+        return ApiResponse::success([
+            'records' => $items,
             'summary' => $summary,
             'pagination' => self::pagination($records),
         ], 'Attendance records loaded.');
@@ -555,6 +596,23 @@ final class AttendanceController extends Controller
         }
 
         return Program::query()->pluck('id');
+    }
+
+    private function sessionSummary(Builder $query): array
+    {
+        return [
+            'held' => (clone $query)->where('status', '<>', 'cancelled')->count(),
+            'not_started' => (clone $query)
+                ->where('status', 'open')
+                ->whereNull('qr_opened_at')
+                ->count(),
+            'unfinalized' => (clone $query)
+                ->where('status', 'open')
+                ->whereNotNull('qr_opened_at')
+                ->count(),
+            'finalized' => (clone $query)->where('status', 'submitted')->count(),
+            'cancelled' => (clone $query)->where('status', 'cancelled')->count(),
+        ];
     }
 
     private function summaryCounts(Builder $query): array
