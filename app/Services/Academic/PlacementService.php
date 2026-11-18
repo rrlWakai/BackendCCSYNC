@@ -6,11 +6,16 @@ use App\Models\AcademicTerm;
 use App\Models\Section;
 use App\Models\Student;
 use App\Models\StudentAcademicPlacement;
+use App\Services\Students\StudentLifecycleService;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 final class PlacementService
 {
-    public function __construct(private readonly AcademicYearService $academicYears) {}
+    public function __construct(
+        private readonly AcademicYearService $academicYears,
+        private readonly StudentLifecycleService $lifecycle,
+    ) {}
 
     public function currentFor(Student $student): ?StudentAcademicPlacement
     {
@@ -72,6 +77,22 @@ final class PlacementService
                 'current_placement_id' => $placement->id,
                 'section_id' => $section->id,
             ])->save();
+
+            if ($placement->wasRecentlyCreated) {
+                $this->lifecycle->recordActivity(
+                    $student,
+                    Auth::user(),
+                    'placement_recorded',
+                    'An academic placement was recorded for the student.',
+                    [
+                        'placement_id' => $placement->id,
+                        'academic_term_id' => $term->id,
+                        'program_id' => $section->program_id,
+                        'year_level_id' => $section->year_level_id,
+                        'section_id' => $section->id,
+                    ],
+                );
+            }
 
             return $placement->refresh()->load([
                 'academicYear',

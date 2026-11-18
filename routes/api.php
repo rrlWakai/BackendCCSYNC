@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\V1\RegistrationOptionsController;
 use App\Http\Controllers\Api\V1\SchedulingController;
 use App\Http\Controllers\Api\V1\SectionController;
 use App\Http\Controllers\Api\V1\StudentController;
+use App\Http\Controllers\Api\V1\StudentLifecycleController;
 use App\Http\Controllers\Api\V1\StudentPlacementController;
 use App\Http\Controllers\Api\V1\StudentScheduleConflictController;
 use App\Http\Controllers\Api\V1\SubjectController;
@@ -230,6 +231,18 @@ Route::prefix('v1')
                 Route::middleware('role:student')
                     ->post('/me/major-selection/{period}', [StudentPlacementController::class, 'selectMajor'])
                     ->name('me.major-selection');
+                Route::middleware('role:administrator,department_personnel')->group(function (): void {
+                    Route::get('/activity-logs', [StudentLifecycleController::class, 'activityLogs'])
+                        ->name('activity-logs');
+                    Route::get('/academic-history', [StudentLifecycleController::class, 'academicHistory'])
+                        ->name('academic-history');
+                    Route::get('/removed', [StudentLifecycleController::class, 'removed'])
+                        ->name('removed');
+                    Route::post('/{student}/remove', [StudentLifecycleController::class, 'remove'])
+                        ->name('remove');
+                    Route::post('/{student}/restore', [StudentLifecycleController::class, 'restore'])
+                        ->name('restore');
+                });
                 Route::get('/{student}', [StudentController::class, 'show'])->name('show');
             });
 

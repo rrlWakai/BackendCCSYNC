@@ -19,3 +19,7 @@ Schedule::command('rooms:process-checkouts')
 Schedule::command('promotions:process-due')
     ->dailyAt('01:00')
     ->withoutOverlapping();
+
+Schedule::command('students:process-removals')
+    ->everyMinute()
+    ->withoutOverlapping();

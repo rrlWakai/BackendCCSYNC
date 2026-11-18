@@ -64,6 +64,16 @@ class Student extends Model
         return $this->hasMany(StudentSubjectEnrollment::class);
     }
 
+    public function removals(): HasMany
+    {
+        return $this->hasMany(StudentRemoval::class);
+    }
+
+    public function activityLogs(): HasMany
+    {
+        return $this->hasMany(StudentActivityLog::class);
+    }
+
     public function subjectOfferings(): BelongsToMany
     {
         return $this->belongsToMany(

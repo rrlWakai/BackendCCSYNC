@@ -13,6 +13,20 @@ final class StudentPolicy
         return $actor->hasRole(Role::ADMINISTRATOR, Role::DEPARTMENT_PERSONNEL);
     }
 
+    public function remove(User $actor, Student $student): bool
+    {
+        return $actor->isActive()
+            && $actor->hasRole(Role::ADMINISTRATOR, Role::DEPARTMENT_PERSONNEL)
+            && $student->status !== 'deleted';
+    }
+
+    public function restore(User $actor, Student $student): bool
+    {
+        return $actor->isActive()
+            && $actor->hasRole(Role::ADMINISTRATOR, Role::DEPARTMENT_PERSONNEL)
+            && $student->status !== 'deleted';
+    }
+
     public function view(User $actor, Student $student): bool
     {
         if (! $actor->isActive()) {

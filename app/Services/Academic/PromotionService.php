@@ -13,6 +13,7 @@ use App\Models\StudentAcademicPlacement;
 use App\Models\StudentMajorSelection;
 use App\Models\User;
 use App\Models\YearLevel;
+use App\Services\Students\StudentLifecycleService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -21,7 +22,10 @@ final class PromotionService
 {
     private const MAJOR_START_LEVEL = 3;
 
-    public function __construct(private readonly SectionAllocationService $sections) {}
+    public function __construct(
+        private readonly SectionAllocationService $sections,
+        private readonly StudentLifecycleService $lifecycle,
+    ) {}
 
     public function prepare(
         AcademicYear $sourceYear,
@@ -364,6 +368,19 @@ final class PromotionService
                 ])->save();
 
                 $item->update(['status' => 'promoted', 'exception_code' => null, 'exception_message' => null]);
+                $this->lifecycle->recordActivity(
+                    $student,
+                    $actor,
+                    'placement_promoted',
+                    'The student was promoted to a new academic placement.',
+                    [
+                        'placement_id' => $placement->id,
+                        'promotion_run_id' => $run->id,
+                        'academic_term_id' => $run->target_term_id,
+                        'year_level_id' => $item->to_year_level_id,
+                        'section_id' => $item->section_id,
+                    ],
+                );
                 $promoted++;
             }
 

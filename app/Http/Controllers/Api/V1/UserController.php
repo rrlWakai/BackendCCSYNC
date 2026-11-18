@@ -15,6 +15,7 @@ use App\Models\Department;
 use App\Models\Program;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\Students\StudentLifecycleService;
 use App\Support\ApiResponse;
 use App\Support\UserAccountPresenter;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +26,8 @@ use Illuminate\Validation\ValidationException;
 
 final class UserController extends Controller
 {
+    public function __construct(private readonly StudentLifecycleService $studentLifecycle) {}
+
     public function index(IndexUsersRequest $request): JsonResponse
     {
         $filters = $request->validated();
@@ -140,8 +143,9 @@ final class UserController extends Controller
     {
         $attributes = $request->validated();
         $role = Role::query()->where('code', $attributes['role'])->firstOrFail();
+        $actor = $request->user();
 
-        $user = DB::transaction(function () use ($attributes, $role): User {
+        $user = DB::transaction(function () use ($actor, $attributes, $role): User {
             $user = User::create([
                 'role_id' => $role->id,
                 'name' => $attributes['name'],
@@ -151,10 +155,21 @@ final class UserController extends Controller
             ]);
 
             if ($role->code === Role::STUDENT) {
-                $user->student()->create([
+                $student = $user->student()->create([
                     ...$attributes['profile'],
                     'status' => 'active',
                 ]);
+
+                $this->studentLifecycle->recordActivity(
+                    $student,
+                    $actor,
+                    'student_created',
+                    'The student account and academic profile were created.',
+                    [
+                        'student_number' => $student->student_number,
+                        'program_id' => $student->program_id,
+                    ],
+                );
             } elseif ($role->code === Role::PROFESSOR) {
                 $user->professor()->create([
                     ...$attributes['profile'],
@@ -175,8 +190,9 @@ final class UserController extends Controller
     public function update(UpdateUserRequest $request, User $user): JsonResponse
     {
         $attributes = $request->validated();
+        $actor = $request->user();
 
-        DB::transaction(function () use ($attributes, $user): void {
+        DB::transaction(function () use ($actor, $attributes, $user): void {
             $user->fill(collect($attributes)->only(['name', 'email'])->all());
 
             if (isset($attributes['password']) && $attributes['password'] !== '') {
@@ -184,13 +200,28 @@ final class UserController extends Controller
             }
 
             $user->save();
+            $userChanges = array_keys(array_intersect_key($user->getChanges(), array_flip(['name', 'email'])));
 
             if (! isset($attributes['profile'])) {
                 return;
             }
 
             if ($user->hasRole(Role::STUDENT)) {
-                $user->student()->updateOrCreate([], $attributes['profile']);
+                $student = $user->student()->updateOrCreate([], $attributes['profile']);
+                $studentChanges = array_keys(array_diff_key($student->getChanges(), array_flip(['updated_at'])));
+
+                if ($userChanges !== [] || $studentChanges !== []) {
+                    $this->studentLifecycle->recordActivity(
+                        $student,
+                        $actor,
+                        'student_profile_updated',
+                        'The student account or academic profile was updated.',
+                        [
+                            'user_fields' => $userChanges,
+                            'student_fields' => $studentChanges,
+                        ],
+                    );
+                }
             } elseif ($user->hasRole(Role::PROFESSOR)) {
                 $user->professor()->updateOrCreate([], $attributes['profile']);
             }

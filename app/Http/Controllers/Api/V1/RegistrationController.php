@@ -15,6 +15,7 @@ use App\Models\Student;
 use App\Models\User;
 use App\Models\YearLevel;
 use App\Services\Academic\PlacementService;
+use App\Services\Students\StudentLifecycleService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,7 +27,10 @@ use Illuminate\Support\Str;
 
 final class RegistrationController extends Controller
 {
-    public function __construct(private readonly PlacementService $placements) {}
+    public function __construct(
+        private readonly PlacementService $placements,
+        private readonly StudentLifecycleService $studentLifecycle,
+    ) {}
 
     public function registerStudent(RegisterStudentRequest $request): JsonResponse
     {
@@ -95,7 +99,17 @@ final class RegistrationController extends Controller
             ]);
 
             $this->placements->createInitialPlacement($student, $section, $academicTerm);
-
+            $this->studentLifecycle->recordActivity(
+                $student,
+                null,
+                'student_created',
+                'The student registered an account and received an initial academic placement.',
+                [
+                    'student_number' => $student->student_number,
+                    'program_id' => $program->id,
+                    'section_id' => $section->id,
+                ],
+            );
         });
 
         return ApiResponse::success(null, 'Student account registered. You can now sign in.', 201);
