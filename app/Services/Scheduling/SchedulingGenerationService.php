@@ -586,6 +586,68 @@ final class SchedulingGenerationService
         ];
     }
 
+    public function historySummary(SchedulingGeneration $generation): array
+    {
+        $candidate = $generation->relationLoaded('candidate')
+            ? $generation->getRelation('candidate')
+            : $generation->candidate;
+
+        return [
+            ...$this->generationSummary($generation),
+            'requested_at' => $generation->requested_at?->toIso8601String(),
+            'started_at' => $generation->started_at?->toIso8601String(),
+            'solver_execution_ms' => $generation->solver_execution_ms,
+            'candidate_count' => $candidate instanceof SchedulingCandidate ? 1 : 0,
+            'diagnostics' => $this->safeHistoryDiagnostics($generation->diagnostics),
+            'contract_version' => $generation->contract_version,
+            'correlation_id' => $generation->correlation_id,
+            'candidate' => $this->candidateSummary($candidate instanceof SchedulingCandidate ? $candidate : null),
+        ];
+    }
+
+    private function safeHistoryDiagnostics(mixed $diagnostics): array
+    {
+        if (! is_array($diagnostics)) {
+            return ['codes' => [], 'frozen_source' => null];
+        }
+
+        $codes = [];
+        $this->collectDiagnosticCodes($diagnostics, $codes);
+        $frozenSource = $diagnostics['frozen_source'] ?? null;
+
+        return [
+            'codes' => array_values(array_slice(array_unique($codes), 0, 20)),
+            'frozen_source' => is_array($frozenSource) ? [
+                'snapshot_sha256' => is_string($frozenSource['snapshot_sha256'] ?? null) ? $frozenSource['snapshot_sha256'] : null,
+                'contract_version' => is_string($frozenSource['contract_version'] ?? null) ? $frozenSource['contract_version'] : null,
+                'solver_config_sha256' => is_string($frozenSource['solver_config_sha256'] ?? null) ? $frozenSource['solver_config_sha256'] : null,
+                'fingerprint' => is_string($frozenSource['fingerprint'] ?? null) ? $frozenSource['fingerprint'] : null,
+            ] : null,
+        ];
+    }
+
+    private function collectDiagnosticCodes(mixed $diagnostics, array &$codes): void
+    {
+        if (count($codes) >= 20 || ! is_array($diagnostics)) {
+            return;
+        }
+
+        $code = $diagnostics['code'] ?? null;
+        if (is_string($code)) {
+            $codes[] = $code;
+        }
+
+        foreach ($diagnostics as $value) {
+            if (is_array($value)) {
+                $this->collectDiagnosticCodes($value, $codes);
+            }
+
+            if (count($codes) >= 20) {
+                return;
+            }
+        }
+    }
+
     public function candidateSummary(?SchedulingCandidate $candidate): ?array
     {
         if ($candidate === null) {

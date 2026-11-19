@@ -452,6 +452,8 @@ Route::prefix('v1')
                 ->name('scheduling.options');
             Route::get('/scheduling/readiness', [SchedulingController::class, 'readiness'])
                 ->name('scheduling.readiness');
+            Route::get('/scheduling/generations', [SchedulingController::class, 'history'])
+                ->name('scheduling.generations.history');
             Route::post('/scheduling/solve', [SchedulingController::class, 'solve'])
                 ->name('scheduling.solve');
 

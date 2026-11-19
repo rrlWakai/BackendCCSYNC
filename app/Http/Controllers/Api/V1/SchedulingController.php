@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Scheduling\CancelScheduleAssignmentRequest;
 use App\Http\Requests\Scheduling\IndexFacultyAssignmentsRequest;
 use App\Http\Requests\Scheduling\IndexScheduleConflictsRequest;
+use App\Http\Requests\Scheduling\IndexSchedulingGenerationHistoryRequest;
 use App\Http\Requests\Scheduling\IndexSchedulesRequest;
 use App\Http\Requests\Scheduling\ReleaseRoomAllocationRequest;
 use App\Http\Requests\Scheduling\ResolveScheduleConflictRequest;
@@ -28,6 +29,7 @@ use App\Models\Room;
 use App\Models\RoomAllocation;
 use App\Models\ScheduleAssignment;
 use App\Models\ScheduleConflict;
+use App\Models\SchedulingGeneration;
 use App\Models\Section;
 use App\Models\Subject;
 use App\Models\SubjectOffering;
@@ -147,6 +149,30 @@ final class SchedulingController extends Controller
             ['readiness' => $this->readiness->inspect($term)],
             'Scheduling readiness loaded.',
         );
+    }
+
+    public function history(IndexSchedulingGenerationHistoryRequest $request): JsonResponse
+    {
+        Gate::authorize('viewAny', ClassSchedule::class);
+
+        $term = AcademicTerm::query()->findOrFail($request->validated('academic_term_id'));
+        $perPage = max(1, min(100, (int) ($request->validated('per_page') ?? 25)));
+        $paginator = SchedulingGeneration::query()
+            ->where('academic_term_id', $term->id)
+            ->with('candidate')
+            ->orderByDesc('requested_at')
+            ->orderByDesc('id')
+            ->paginate($perPage);
+
+        $generations = array_map(
+            fn (SchedulingGeneration $generation): array => $this->generations->historySummary($generation),
+            $paginator->items(),
+        );
+
+        return ApiResponse::success([
+            'generations' => $generations,
+            'pagination' => self::pagination($paginator),
+        ], 'Generation history loaded.');
     }
 
     public function solve(SolveSchedulingRequest $request): JsonResponse
