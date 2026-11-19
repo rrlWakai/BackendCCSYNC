@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\AcademicTerm;
+use App\Models\AcademicYear;
 use App\Models\Major;
 use App\Models\Program;
 use App\Models\Room;
@@ -20,6 +21,15 @@ class ReferenceDataSeeder extends Seeder
     public function run(): void
     {
         $this->refuseProtectedDatabase();
+
+        $academicYear = AcademicYear::updateOrCreate(
+            ['label' => '2026-2027'],
+            [
+                'starts_on' => '2026-08-03',
+                'ends_on' => '2027-05-21',
+                'status' => 'active',
+            ],
+        );
 
         $bsit = Program::updateOrCreate(
             ['code' => 'BSIT'],
@@ -61,6 +71,7 @@ class ReferenceDataSeeder extends Seeder
         $currentTerm = AcademicTerm::updateOrCreate(
             ['academic_year' => '2026-2027', 'term' => 'first'],
             [
+                'academic_year_id' => $academicYear->id,
                 'name' => 'First Semester 2026-2027',
                 'starts_on' => '2026-08-03',
                 'ends_on' => '2026-12-18',
@@ -74,6 +85,7 @@ class ReferenceDataSeeder extends Seeder
         $futureTerm = AcademicTerm::updateOrCreate(
             ['academic_year' => '2026-2027', 'term' => 'second'],
             [
+                'academic_year_id' => $academicYear->id,
                 'name' => 'Second Semester 2026-2027',
                 'starts_on' => '2027-01-11',
                 'ends_on' => '2027-05-21',
@@ -84,6 +96,11 @@ class ReferenceDataSeeder extends Seeder
 
         $firstYear = YearLevel::where('level', 1)->firstOrFail();
         $secondYear = YearLevel::where('level', 2)->firstOrFail();
+        $thirdYear = YearLevel::where('level', 3)->firstOrFail();
+        $wmad = Major::where('program_id', $bsit->id)->where('code', 'WMAD')->firstOrFail();
+        $smp = Major::where('program_id', $bsit->id)->where('code', 'SMP')->firstOrFail();
+        $amg = Major::where('program_id', $bscs->id)->where('code', 'AMG')->firstOrFail();
+        $is = Major::where('program_id', $bscs->id)->where('code', 'IS')->firstOrFail();
 
         $bsitSection = Section::updateOrCreate(
             ['academic_term_id' => $currentTerm->id, 'code' => 'BSIT-1A'],
@@ -128,6 +145,25 @@ class ReferenceDataSeeder extends Seeder
                 'status' => 'active',
             ],
         );
+
+        foreach ([
+            ['BSIT-3A-WMAD', $bsit, $thirdYear, $wmad, 'BSIT Third Year WMAD A'],
+            ['BSIT-3A-SMP', $bsit, $thirdYear, $smp, 'BSIT Third Year SMP A'],
+            ['BSCS-3A-AMG', $bscs, $thirdYear, $amg, 'BSCS Third Year AMG A'],
+            ['BSCS-3A-IS', $bscs, $thirdYear, $is, 'BSCS Third Year IS A'],
+        ] as [$code, $program, $yearLevel, $major, $name]) {
+            Section::updateOrCreate(
+                ['academic_term_id' => $currentTerm->id, 'code' => $code],
+                [
+                    'program_id' => $program->id,
+                    'year_level_id' => $yearLevel->id,
+                    'major_id' => $major->id,
+                    'name' => $name,
+                    'capacity' => 40,
+                    'status' => 'active',
+                ],
+            );
+        }
 
         $subjects = [
             ['code' => 'IT101', 'title' => 'Introduction to Information Technology', 'units' => 3.0, 'lecture_hours' => 2.0, 'lab_hours' => 3.0],

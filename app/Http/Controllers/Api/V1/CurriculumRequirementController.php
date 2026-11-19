@@ -139,22 +139,24 @@ final class CurriculumRequirementController extends Controller
         $subjectId = $request->input('subject_id', $requirement?->subject_id);
         $majorId = $request->input('major_id', $requirement?->major_id);
         $semester = $request->input('semester', $requirement?->semester);
-        $classification = $request->input('classification', $requirement?->classification);
+        $classification = $request->input('classification');
+
+        if ($classification === null) {
+            $classification = $request->exists('major_id')
+                ? ($majorId === null ? 'common' : 'major')
+                : ($requirement?->classification ?? ($majorId === null ? 'common' : 'major'));
+        }
 
         $attributes = $request->validate([
             'program_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('programs', 'id')],
             'year_level_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('year_levels', 'id')],
             'semester' => [$requirement === null ? 'required' : 'sometimes', Rule::in(CurriculumRequirement::SEMESTERS)],
             'major_id' => ['sometimes', 'nullable', 'integer', Rule::exists('majors', 'id')],
-            'classification' => [$requirement === null ? 'required' : 'sometimes', Rule::in(CurriculumRequirement::CLASSIFICATIONS)],
+            'classification' => ['sometimes', 'nullable', Rule::in(CurriculumRequirement::CLASSIFICATIONS)],
             'subject_id' => [$requirement === null ? 'required' : 'sometimes', 'integer', Rule::exists('subjects', 'id')],
             'requirement_type' => ['sometimes', Rule::in(['core', 'minor', 'major', 'elective'])],
             'status' => ['sometimes', Rule::in(['active', 'inactive'])],
         ]);
-
-        if ($classification === null) {
-            $classification = $majorId === null ? 'common' : 'major';
-        }
 
         if ($classification === 'common' && $majorId !== null) {
             throw ValidationException::withMessages([
