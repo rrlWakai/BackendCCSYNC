@@ -8,8 +8,8 @@ return [
     | Python Scheduling Engine Configuration
     |--------------------------------------------------------------------------
     |
-    | These values configure the service-to-service connection between the
-    | Laravel backend and the local Python FastAPI + OR-Tools scheduler.
+     | These values configure the service-to-service connection between the
+     | Laravel backend and the deployed Python FastAPI + OR-Tools scheduler.
     |
     | All values MUST be supplied through environment variables. There are
     | no hardcoded fallbacks for URLs or credentials.
@@ -22,7 +22,9 @@ return [
 
     'connect_timeout' => (int) env('SCHEDULER_CONNECT_TIMEOUT', 5),
 
-    'timeout' => (int) env('SCHEDULER_TIMEOUT', 30),
+    'timeout' => (int) env('SCHEDULER_TIMEOUT', 60),
+
+    'health_cache_seconds' => max(1, (int) env('SCHEDULER_HEALTH_CACHE_SECONDS', 30)),
 
     'contract_version' => '1.0',
 

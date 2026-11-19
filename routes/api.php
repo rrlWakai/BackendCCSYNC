@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\V1\RegistrationController;
 use App\Http\Controllers\Api\V1\RegistrationOptionsController;
 use App\Http\Controllers\Api\V1\RoomController;
 use App\Http\Controllers\Api\V1\RoomMonitoringController;
+use App\Http\Controllers\Api\V1\SchedulingCandidateController;
 use App\Http\Controllers\Api\V1\SchedulingConfigurationController;
 use App\Http\Controllers\Api\V1\SchedulingController;
 use App\Http\Controllers\Api\V1\SectionController;
@@ -453,6 +454,21 @@ Route::prefix('v1')
                 ->name('scheduling.readiness');
             Route::post('/scheduling/solve', [SchedulingController::class, 'solve'])
                 ->name('scheduling.solve');
+
+            Route::get('/scheduling/candidates/{candidate}', [SchedulingCandidateController::class, 'show'])
+                ->name('scheduling.candidates.show');
+            Route::post('/scheduling/candidates/{candidate}/revisions', [SchedulingCandidateController::class, 'storeRevision'])
+                ->name('scheduling.candidates.revisions.store');
+            Route::get('/scheduling/candidate-revisions/{revision}', [SchedulingCandidateController::class, 'showRevision'])
+                ->name('scheduling.candidate-revisions.show');
+            Route::patch('/scheduling/candidate-revisions/{revision}', [SchedulingCandidateController::class, 'updateRevision'])
+                ->name('scheduling.candidate-revisions.update');
+            Route::post('/scheduling/candidate-revisions/{revision}/validate', [SchedulingCandidateController::class, 'validateRevision'])
+                ->name('scheduling.candidate-revisions.validate');
+            Route::post('/scheduling/candidate-revisions/{revision}/transition', [SchedulingCandidateController::class, 'transition'])
+                ->name('scheduling.candidate-revisions.transition');
+            Route::get('/scheduling/candidate-revisions/{revision}/status-events', [SchedulingCandidateController::class, 'statusEvents'])
+                ->name('scheduling.candidate-revisions.status-events');
 
             Route::prefix('scheduling/configuration')
                 ->name('scheduling.configuration.')

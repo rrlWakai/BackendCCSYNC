@@ -32,6 +32,7 @@ use App\Models\Subject;
 use App\Models\SubjectOffering;
 use App\Services\Scheduling\ScheduleManagementService;
 use App\Services\Scheduling\SchedulerClient;
+use App\Services\Scheduling\SchedulingGenerationService;
 use App\Services\Scheduling\SchedulingReadinessService;
 use App\Services\Scheduling\SchedulingRequestBuilder;
 use App\Support\ApiResponse;
@@ -50,6 +51,7 @@ final class SchedulingController extends Controller
         private readonly SchedulingReadinessService $readiness,
         private readonly SchedulingRequestBuilder $requestBuilder,
         private readonly SchedulerClient $scheduler,
+        private readonly SchedulingGenerationService $generations,
     ) {}
 
     public function options(SchedulingOptionsRequest $request): JsonResponse
@@ -172,19 +174,46 @@ final class SchedulingController extends Controller
             );
         }
 
+        $generation = $this->generations->start($term, $request->user(), $payload);
         $response = $this->scheduler->solve($payload);
 
         if (! $response->isOk()) {
+            $this->generations->recordFailure($generation, $response);
+            $details = $response->getBody() ?? [];
+            if (! is_array($details)) {
+                $details = ['message' => $details];
+            }
+            $details['generation'] = $this->generations->generationSummary($generation);
+
             return ApiResponse::error(
                 $response->getMessage(),
                 $response->getHttpStatus() ?? 502,
-                $response->getBody(),
+                $details,
                 $response->getErrorCode(),
             );
         }
 
+        $result = $response->getBody() ?? [];
+        $candidate = $this->generations->recordOutcome($generation, $payload, $result);
+        $generation->refresh();
+
+        $data = [
+            'result' => $result,
+            'generation' => $this->generations->generationSummary($generation),
+            'candidate' => $this->generations->candidateSummary($candidate),
+        ];
+
+        if ($candidate === null) {
+            return ApiResponse::error(
+                'The scheduling response could not be persisted as a candidate.',
+                502,
+                $data,
+                'scheduling_response_persistence_failed',
+            );
+        }
+
         return ApiResponse::success(
-            ['result' => $response->getBody()],
+            $data,
             'Scheduling candidate generated.',
         );
     }

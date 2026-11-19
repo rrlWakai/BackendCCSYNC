@@ -67,6 +67,16 @@ final class SchedulerResponse
         );
     }
 
+    public static function invalidRequest(string $message, int $status): self
+    {
+        return new self(
+            ok: false,
+            message: $message,
+            errorCode: 'scheduler_invalid_request',
+            httpStatus: $status >= 400 && $status < 500 ? $status : 422,
+        );
+    }
+
     public static function invalidResponse(string $message): self
     {
         return new self(

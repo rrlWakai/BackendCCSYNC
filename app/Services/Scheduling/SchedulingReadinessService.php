@@ -11,8 +11,12 @@ use App\Models\ScheduleConflict;
 use App\Models\Section;
 use App\Models\SubjectOffering;
 use App\Services\Scheduling\Contracts\SchedulingConfigurationProvider;
+use App\Support\SchedulerResponse;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Collection;
+use Throwable;
 
 final class SchedulingReadinessService
 {
@@ -20,13 +24,25 @@ final class SchedulingReadinessService
         'generation_records_not_configured',
         'snapshot_history_not_configured',
         'candidate_persistence_not_configured',
+        'candidate_revision_history_not_configured',
         'published_baseline_unlinked',
+    ];
+
+    private const CAPABILITY_LIMITATION_ISSUE_CODES = [
+        'section_availability_not_configured',
+        'combined_classes_not_configured',
+        'fixed_schedule_protection_not_supported',
+        'replacement_draft_selection_not_supported',
+        'existing_commitments_not_supported',
     ];
 
     private const INTEGRATION_ISSUE_CODES = [
         'scheduler_service_not_configured',
         'scheduler_api_key_not_configured',
         'scheduler_contract_version_unsupported',
+        'scheduler_liveness_check_failed',
+        'scheduler_service_not_ready',
+        'scheduler_service_authentication_failed',
     ];
 
     private const ASSIGNMENT_ROLES = ['lead', 'co_instructor', 'lab_instructor', 'substitute'];
@@ -37,6 +53,7 @@ final class SchedulingReadinessService
 
     public function __construct(
         private readonly SchedulingConfigurationProvider $configuration,
+        private readonly SchedulerClient $scheduler,
     ) {}
 
     public function inspect(AcademicTerm $term): array
@@ -96,29 +113,42 @@ final class SchedulingReadinessService
         $meetingPlans = $this->configuration->meetingPlans($term, $offerings);
 
         $this->inspectIntegration($issues);
+        $schedulerService = $this->inspectSchedulerService($issues);
         $this->inspectTerm($term, $issues);
         $this->inspectOfferings($term, $offerings, $issues);
         $this->inspectCurriculum($term, $offerings, $issues);
         $assignedProfessors = $this->inspectAssignments($offerings, $issues);
         $fullTimePolicy = $this->configuration->fullTimeWorkdayPolicy($term, $assignedProfessors->values());
+        $capabilityDetails = $this->configuration->capabilityStatus();
         $capabilities = $this->capabilities(
             $timeGrid,
             $meetingPlans,
             $offerings,
             $assignedProfessors,
             $fullTimePolicy,
+            $capabilityDetails,
         );
 
         $this->inspectAvailability($term, $assignedProfessors, $issues);
         $this->inspectRooms($rooms, $offerings, $issues);
         $this->inspectPublishedSchedules($publishedSchedules, $offeringIds, $issues);
         $this->inspectDraftsAndConflicts($draftCount, $openConflictCount, $issues);
-        $this->inspectCapabilities($term, $offerings, $assignedProfessors, $timeGrid, $meetingPlans, $capabilities, $issues);
+        $this->inspectCapabilities(
+            $term,
+            $offerings,
+            $assignedProfessors,
+            $timeGrid,
+            $meetingPlans,
+            $capabilities,
+            $capabilityDetails,
+            $issues,
+        );
 
         $issues = array_map(function (array $issue): array {
             $issue['layer'] = match (true) {
                 in_array($issue['code'], self::INTEGRATION_ISSUE_CODES, true) => 'integration',
                 in_array($issue['code'], self::LIFECYCLE_ISSUE_CODES, true) => 'lifecycle',
+                in_array($issue['code'], self::CAPABILITY_LIMITATION_ISSUE_CODES, true) => 'generation_data',
                 default => 'generation_data',
             };
 
@@ -130,6 +160,16 @@ final class SchedulingReadinessService
             'generation_data' => $this->layerSummary($issues, 'generation_data'),
             'lifecycle' => $this->layerSummary($issues, 'lifecycle'),
         ];
+
+        $apiKeyConfigured = is_string(config('scheduler.api_key'))
+            && trim((string) config('scheduler.api_key')) !== '';
+        $pythonServiceAvailable = ($schedulerService['live']['ok'] ?? false) === true;
+        $authenticationReady = $apiKeyConfigured
+            && ($schedulerService['ready']['ok'] ?? false) === true
+            && ($schedulerService['ready']['error_code'] ?? null) !== 'scheduler_authentication_failed';
+        $contractCompatible = config('scheduler.contract_version') === '1.0';
+        $candidatePersistenceReady = ($capabilities['candidate_persistence'] ?? false) === true
+            && ($capabilities['candidate_revisions'] ?? false) === true;
 
         $blockingCount = $this->countSeverity($issues, 'blocking');
         $warningCount = $this->countSeverity($issues, 'warning');
@@ -149,7 +189,15 @@ final class SchedulingReadinessService
             'integration_ready' => $layers['integration']['ready'],
             'generation_data_ready' => $layers['generation_data']['ready'],
             'lifecycle_ready' => $layers['lifecycle']['ready'],
-            'generation_available' => $layers['integration']['ready'] && $layers['generation_data']['ready'],
+            'generation_available' => $layers['integration']['ready']
+                && $layers['generation_data']['ready']
+                && $layers['lifecycle']['ready']
+                && $candidatePersistenceReady
+                && $contractCompatible,
+            'python_service_available' => $pythonServiceAvailable,
+            'authentication_ready' => $authenticationReady,
+            'contract_compatible' => $contractCompatible,
+            'candidate_persistence_ready' => $candidatePersistenceReady,
             'blocking_count' => $blockingCount,
             'warning_count' => $warningCount,
             'info_count' => $infoCount,
@@ -179,6 +227,8 @@ final class SchedulingReadinessService
             'issues' => $issues,
             'layers' => $layers,
             'capabilities' => $capabilities,
+            'capability_details' => $capabilityDetails,
+            'scheduler_service' => $schedulerService,
             'inspected_at' => now()->toIso8601String(),
         ];
     }
@@ -218,6 +268,89 @@ final class SchedulingReadinessService
                 'The configured scheduler contract version is not supported by this backend.',
             );
         }
+    }
+
+    private function inspectSchedulerService(array &$issues): array
+    {
+        $checkedAt = now()->toIso8601String();
+        $url = config('scheduler.url');
+        $configured = is_string($url) && trim($url) !== '' && filter_var($url, FILTER_VALIDATE_URL) !== false;
+        $apiKeyConfigured = is_string(config('scheduler.api_key')) && trim((string) config('scheduler.api_key')) !== '';
+
+        if (! $configured) {
+            return [
+                'configured' => false,
+                'live' => ['ok' => false, 'checked_at' => $checkedAt],
+                'ready' => ['ok' => false, 'checked_at' => $checkedAt],
+                'checked_at' => $checkedAt,
+            ];
+        }
+
+        $ttl = (int) config('scheduler.health_cache_seconds', 30);
+        $cachePrefix = 'scheduling.scheduler.'.sha1(trim((string) $url)).'.';
+        $live = Cache::remember(
+            $cachePrefix.'live',
+            $ttl,
+            fn (): array => $this->schedulerResponseSnapshot($this->scheduler->live()),
+        );
+        $ready = $apiKeyConfigured
+            ? Cache::remember(
+                $cachePrefix.'ready',
+                $ttl,
+                fn (): array => $this->schedulerResponseSnapshot($this->scheduler->ready()),
+            )
+            : [
+                'ok' => false,
+                'message' => 'SCHEDULER_API_KEY is not configured.',
+                'error_code' => 'scheduler_api_key_not_configured',
+                'body' => null,
+            ];
+
+        if ($live['ok'] !== true) {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'scheduler_liveness_check_failed',
+                'integration',
+                'The scheduling engine did not pass its public liveness check.',
+            );
+        }
+
+        if ($ready['ok'] !== true && $apiKeyConfigured) {
+            $authenticationFailed = ($ready['error_code'] ?? null) === 'scheduler_authentication_failed';
+
+            $this->addIssue(
+                $issues,
+                'blocking',
+                $authenticationFailed
+                    ? 'scheduler_service_authentication_failed'
+                    : 'scheduler_service_not_ready',
+                'integration',
+                $authenticationFailed
+                    ? 'The scheduling engine rejected the configured service credentials.'
+                    : 'The scheduling engine did not pass its authenticated readiness check.',
+            );
+        }
+
+        $live['checked_at'] = $checkedAt;
+        $ready['checked_at'] = $checkedAt;
+
+        return [
+            'configured' => true,
+            'live' => $live,
+            'ready' => $ready,
+            'checked_at' => $checkedAt,
+        ];
+    }
+
+    private function schedulerResponseSnapshot(SchedulerResponse $response): array
+    {
+        return [
+            'ok' => $response->isOk(),
+            'message' => $response->getMessage(),
+            'error_code' => $response->getErrorCode(),
+            'body' => $response->getBody(),
+        ];
     }
 
     private function inspectTerm(AcademicTerm $term, array &$issues): void
@@ -888,6 +1021,7 @@ final class SchedulingReadinessService
      * @param  array<string, mixed>|null  $timeGrid
      * @param  array<int|string, array<string, mixed>>  $meetingPlans
      * @param  array<string, mixed>|null  $fullTimePolicy
+     * @param  array<string, array{supported: bool, reason: string, contract_v1_behavior: string}>  $capabilityDetails
      * @return array<string, bool>
      */
     private function capabilities(
@@ -896,6 +1030,7 @@ final class SchedulingReadinessService
         Collection $offerings,
         Collection $professors,
         ?array $fullTimePolicy,
+        array $capabilityDetails,
     ): array {
         $plansComplete = $offerings->isNotEmpty() && $offerings->every(
             fn (SubjectOffering $offering): bool => $this->isValidMeetingPlanPayload(
@@ -915,13 +1050,37 @@ final class SchedulingReadinessService
             'full_time_workday_policy' => $fullTimeProfessors->isEmpty()
                 || $this->isValidFullTimePolicyPayload($fullTimePolicy),
             'part_time_workload_targets' => $partTimeProfessors->isEmpty() || $partTimeTargetsComplete,
-            'section_availability' => false,
-            'combined_classes' => false,
-            'generation_records' => false,
-            'snapshot_history' => false,
-            'candidate_persistence' => false,
+            'section_availability' => ($capabilityDetails['section_availability']['supported'] ?? false) === true,
+            'combined_classes' => ($capabilityDetails['combined_classes']['supported'] ?? false) === true,
+            'fixed_schedule_protection' => ($capabilityDetails['fixed_schedule_ids']['supported'] ?? false) === true,
+            'replacement_draft_selection' => ($capabilityDetails['replacement_draft_schedule_ids']['supported'] ?? false) === true,
+            'existing_commitments' => ($capabilityDetails['existing_commitments']['supported'] ?? false) === true,
+            'generation_records' => $this->schemaHasTable('scheduling_generations'),
+            'snapshot_history' => $this->schemaHasTable('scheduling_snapshots'),
+            'candidate_persistence' => $this->schemaHasTable('scheduling_candidates')
+                && $this->schemaHasColumn('scheduling_candidates', 'source_response_sha256'),
+            'candidate_revisions' => $this->schemaHasTable('scheduling_candidate_revisions')
+                && $this->schemaHasTable('candidate_revision_status_events'),
             'published_meeting_instance_linkage' => false,
         ];
+    }
+
+    private function schemaHasTable(string $table): bool
+    {
+        try {
+            return Schema::hasTable($table);
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    private function schemaHasColumn(string $table, string $column): bool
+    {
+        try {
+            return Schema::hasTable($table) && Schema::hasColumn($table, $column);
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -1056,6 +1215,7 @@ final class SchedulingReadinessService
         ?array $timeGrid,
         array $meetingPlans,
         array $capabilities,
+        array $capabilityDetails,
         array &$issues,
     ): void {
         $termId = (string) $term->id;
@@ -1172,7 +1332,7 @@ final class SchedulingReadinessService
                 'info',
                 'section_availability_not_configured',
                 'academic',
-                'Section availability is not stored. The contract can represent an empty restriction list, but no term-specific section windows can be supplied.',
+                (string) ($capabilityDetails['section_availability']['reason'] ?? 'Section availability is unsupported in Contract v1.0.'),
                 'academic_term',
                 $termId,
             );
@@ -1184,7 +1344,43 @@ final class SchedulingReadinessService
                 'info',
                 'combined_classes_not_configured',
                 'academic',
-                'Explicit combined-class groups are not stored. No combined classes can be included in a snapshot.',
+                (string) ($capabilityDetails['combined_classes']['reason'] ?? 'Combined classes are unsupported in Contract v1.0.'),
+                'academic_term',
+                $termId,
+            );
+        }
+
+        if (($capabilities['fixed_schedule_protection'] ?? false) !== true) {
+            $this->addIssue(
+                $issues,
+                'info',
+                'fixed_schedule_protection_not_supported',
+                'scheduling',
+                (string) ($capabilityDetails['fixed_schedule_ids']['reason'] ?? 'Fixed schedules are unsupported in Contract v1.0.'),
+                'academic_term',
+                $termId,
+            );
+        }
+
+        if (($capabilities['replacement_draft_selection'] ?? false) !== true) {
+            $this->addIssue(
+                $issues,
+                'info',
+                'replacement_draft_selection_not_supported',
+                'scheduling',
+                (string) ($capabilityDetails['replacement_draft_schedule_ids']['reason'] ?? 'Replacement draft selection is unsupported in Contract v1.0.'),
+                'academic_term',
+                $termId,
+            );
+        }
+
+        if (($capabilities['existing_commitments'] ?? false) !== true) {
+            $this->addIssue(
+                $issues,
+                'info',
+                'existing_commitments_not_supported',
+                'scheduling',
+                (string) ($capabilityDetails['existing_commitments']['reason'] ?? 'Existing commitments are unsupported in Contract v1.0.'),
                 'academic_term',
                 $termId,
             );
@@ -1220,7 +1416,19 @@ final class SchedulingReadinessService
                 'blocking',
                 'candidate_persistence_not_configured',
                 'workflow',
-                'No candidate persistence exists. A solver result cannot be stored, reviewed, approved, or published safely.',
+                'No immutable candidate persistence exists. A solver result cannot be stored, reviewed, or audited safely.',
+                'academic_term',
+                $termId,
+            );
+        }
+
+        if (($capabilities['candidate_revisions'] ?? false) !== true) {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'candidate_revision_history_not_configured',
+                'workflow',
+                'No candidate revision history exists. Original solver output cannot be preserved separately from reviewed revisions.',
                 'academic_term',
                 $termId,
             );

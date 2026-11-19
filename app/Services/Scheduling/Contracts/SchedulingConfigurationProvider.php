@@ -41,4 +41,6 @@ interface SchedulingConfigurationProvider
      * @return list<array<string, mixed>>
      */
     public function combinedClasses(AcademicTerm $term): array;
+
+    public function capabilityStatus(): array;
 }
