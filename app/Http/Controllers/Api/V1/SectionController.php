@@ -116,6 +116,14 @@ final class SectionController extends Controller
                     'major_id' => 'The selected major must belong to the selected program.',
                 ]);
             }
+
+            $yearLevelId = $attributes['year_level_id'] ?? $section?->year_level_id;
+            $yearLevel = YearLevel::query()->find($yearLevelId);
+            if ($yearLevel !== null && $yearLevel->level < 3) {
+                throw ValidationException::withMessages([
+                    'major_id' => 'First- and second-year sections use the common program curriculum; choose a specialization only from third year.',
+                ]);
+            }
         }
     }
 }

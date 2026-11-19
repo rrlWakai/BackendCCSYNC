@@ -109,7 +109,9 @@ final class AcademicClassPreparationService
                 continue;
             }
 
-            $requiresMajor = $program->code === 'BSIT' && $yearLevel->level >= 3;
+            // Both CCS degree programs branch into specializations from third year.
+            // First- and second-year sections always use the common curriculum.
+            $requiresMajor = in_array($program->code, self::PROGRAM_CODES, true) && $yearLevel->level >= 3;
             $major = null;
 
             if ($requiresMajor) {

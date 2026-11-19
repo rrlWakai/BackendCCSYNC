@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\AcademicTerm;
+use App\Models\Major;
 use App\Models\Program;
 use App\Models\Room;
 use App\Models\Section;
@@ -40,6 +41,21 @@ class ReferenceDataSeeder extends Seeder
 
         foreach ($yearLevels as $level => $name) {
             YearLevel::updateOrCreate(['level' => $level], ['name' => $name]);
+        }
+
+        // Official CCS specializations. Curriculum contents remain data-managed
+        // through curriculum mappings and are intentionally not fabricated here.
+        foreach ([
+            [$bsit->id, 'WMAD', 'Web and Mobile Application Development'],
+            [$bsit->id, 'SMP', 'Service Management Program'],
+            [$bsit->id, 'NA', 'Network Administration'],
+            [$bscs->id, 'AMG', 'Animation and Motion Graphics'],
+            [$bscs->id, 'IS', 'Information Systems'],
+        ] as [$programId, $code, $name]) {
+            Major::updateOrCreate(
+                ['program_id' => $programId, 'code' => $code],
+                ['name' => $name, 'status' => 'active'],
+            );
         }
 
         $currentTerm = AcademicTerm::updateOrCreate(
