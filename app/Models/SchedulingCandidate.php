@@ -18,11 +18,9 @@ class SchedulingCandidate extends Model
         'uuid',
         'scheduling_generation_id',
         'academic_term_id',
-        'version',
-        'status',
-        'validation_status',
-        'validation_summary',
-        'validation_errors',
+    ];
+
+    protected $hidden = [
         'approved_by_user_id',
         'approved_at',
         'rejected_by_user_id',
@@ -30,10 +28,6 @@ class SchedulingCandidate extends Model
         'rejection_reason',
         'published_by_user_id',
         'published_at',
-        'previous_candidate_id',
-        'snapshot_sha256',
-        'source_response_sha256',
-        'created_by_user_id',
     ];
 
     protected function casts(): array
@@ -86,7 +80,9 @@ class SchedulingCandidate extends Model
 
     public function statusEvents(): HasMany
     {
-        return $this->hasMany(CandidateStatusEvent::class, 'scheduling_candidate_id');
+        return $this->hasMany(CandidateStatusEvent::class, 'scheduling_candidate_id')
+            ->orderBy('created_at')
+            ->orderBy('id');
     }
 
     public function revisions(): HasMany

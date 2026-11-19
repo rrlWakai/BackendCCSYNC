@@ -10,9 +10,12 @@ final class PhaseTwoSchemaCatalog
 
     public const MIGRATION_100004 = '2026_11_22_100004_correct_scheduling_candidate_integrity';
 
+    public const MIGRATION_100005 = '2026_11_22_100005_align_candidate_status_event_actor_retention';
+
     public const MIGRATIONS = [
         self::MIGRATION_100003,
         self::MIGRATION_100004,
+        self::MIGRATION_100005,
     ];
 
     private const FLEXIBLE_INDEX_NAMES = [
@@ -351,7 +354,7 @@ final class PhaseTwoSchemaCatalog
             ],
             'foreignKeys' => [
                 self::foreignKey('candidate_status_events_scheduling_candidate_id_foreign', 'scheduling_candidate_id', 'scheduling_candidates', 'CASCADE'),
-                self::foreignKey('candidate_status_events_actor_user_id_foreign', 'actor_user_id', 'users', 'RESTRICT'),
+                self::foreignKey('candidate_status_events_actor_user_id_foreign', 'actor_user_id', 'users', 'SET NULL'),
             ],
             'checks' => [
                 self::check('candidate_status_events_to_status_check', "to_status IN ('generated','under_review','approved','rejected','published')"),

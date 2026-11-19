@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Scheduling;
 
+use App\Exceptions\SchedulingGenerationConflictException;
 use App\Models\AcademicTerm;
 use App\Models\CandidateMeetingOffering;
 use App\Models\CandidateMeetingPlacement;
@@ -30,10 +31,31 @@ use Throwable;
 
 final class SchedulingGenerationService
 {
+    private const ACTIVE_STATUSES = ['queued', 'running'];
+
+    public function __construct(
+        private readonly SchedulingRequestBuilder $requestBuilder,
+    ) {}
+
     public function start(AcademicTerm $term, ?Authenticatable $user, array $payload): SchedulingGeneration
     {
         return DB::transaction(function () use ($term, $user, $payload): SchedulingGeneration {
             $lockedTerm = AcademicTerm::query()->whereKey($term->id)->lockForUpdate()->firstOrFail();
+            $this->expireStaleGenerations($lockedTerm);
+
+            $activeGeneration = SchedulingGeneration::query()
+                ->where('academic_term_id', $lockedTerm->id)
+                ->whereIn('status', self::ACTIVE_STATUSES)
+                ->lockForUpdate()
+                ->first();
+
+            if ($activeGeneration !== null) {
+                throw new SchedulingGenerationConflictException(
+                    (int) $lockedTerm->id,
+                    $activeGeneration->uuid,
+                );
+            }
+
             $canonical = SnapshotHasher::canonicalJson(Arr::except($payload, ['contract_version', 'metadata']));
             $hash = hash('sha256', $canonical);
             $declaredHash = (string) Arr::get($payload, 'metadata.snapshot_sha256', '');
@@ -78,8 +100,100 @@ final class SchedulingGenerationService
                 'requested_at' => now(),
                 'started_at' => now(),
                 'correlation_id' => Arr::get($payload, 'metadata.correlation_id'),
+                'diagnostics' => [
+                    'lease_owner' => $generationId,
+                    'lease_expires_at' => now()->addSeconds($this->leaseSeconds())->toIso8601String(),
+                    'frozen_source' => [
+                        'snapshot_sha256' => $hash,
+                        'contract_version' => (string) Arr::get($payload, 'contract_version', '1.0'),
+                        'solver_config_sha256' => hash(
+                            'sha256',
+                            SnapshotHasher::canonicalJson(
+                                is_array($payload['solver_config'] ?? null) ? $payload['solver_config'] : [],
+                            ),
+                        ),
+                        'fingerprint' => $this->sourceFingerprint($payload),
+                    ],
+                ],
             ]);
         });
+    }
+
+    private function expireStaleGenerations(AcademicTerm $term): void
+    {
+        $staleGenerations = SchedulingGeneration::query()
+            ->where('academic_term_id', $term->id)
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->lockForUpdate()
+            ->get()
+            ->filter(fn (SchedulingGeneration $generation): bool => $this->leaseExpired($generation)
+                || $this->leaseOwnerMismatch($generation));
+
+        foreach ($staleGenerations as $generation) {
+            $ownerMismatch = $this->leaseOwnerMismatch($generation);
+            $failureCode = $ownerMismatch ? 'generation_lease_owner_mismatch' : 'generation_lease_expired';
+            $diagnosticCode = $failureCode;
+
+            $generation->forceFill([
+                'status' => 'failed',
+                'failure_code' => $failureCode,
+                'failure_message' => $ownerMismatch
+                    ? 'The generation lease owner does not match this generation.'
+                    : 'The generation lease expired before the solver completed.',
+                'completed_at' => now(),
+                'diagnostics' => $this->mergeDiagnostics($generation->diagnostics, [
+                    [
+                        'code' => $diagnosticCode,
+                        'generation_uuid' => $generation->uuid,
+                        'expired_at' => now()->toIso8601String(),
+                    ],
+                ]),
+            ])->save();
+
+            Log::warning('scheduling.generation.lease_invalid', [
+                'generation_id' => $generation->uuid,
+                'academic_term_id' => $term->id,
+                'failure_code' => $failureCode,
+            ]);
+        }
+    }
+
+    private function leaseSeconds(): int
+    {
+        $configured = (int) config('scheduler.generation_lease_seconds', 300);
+
+        return max(60, $configured);
+    }
+
+    private function leaseExpired(SchedulingGeneration $generation): bool
+    {
+        $diagnostics = is_array($generation->diagnostics) ? $generation->diagnostics : [];
+        $expiresAt = $this->timestamp(Arr::get($diagnostics, 'lease_expires_at'));
+
+        if ($expiresAt !== null) {
+            return $expiresAt->lessThanOrEqualTo(now());
+        }
+
+        $startedAt = $generation->started_at ?? $generation->requested_at;
+
+        return $startedAt === null || $startedAt->lessThanOrEqualTo(now()->subSeconds($this->leaseSeconds()));
+    }
+
+    private function leaseOwnerMismatch(SchedulingGeneration $generation): bool
+    {
+        $diagnostics = is_array($generation->diagnostics) ? $generation->diagnostics : [];
+        $owner = Arr::get($diagnostics, 'lease_owner');
+
+        return is_string($owner) && $owner !== '' && ! hash_equals($owner, $generation->uuid);
+    }
+
+    private function sourceFingerprint(array $payload): string
+    {
+        return hash('sha256', SnapshotHasher::canonicalJson([
+            'snapshot_sha256' => (string) Arr::get($payload, 'metadata.snapshot_sha256', ''),
+            'contract_version' => (string) Arr::get($payload, 'contract_version', '1.0'),
+            'solver_config' => is_array($payload['solver_config'] ?? null) ? $payload['solver_config'] : [],
+        ]));
     }
 
     public function recordFailure(SchedulingGeneration $generation, SchedulerResponse $response): void
@@ -107,10 +221,11 @@ final class SchedulingGenerationService
             default => 'not_validated',
         };
         $sourceResponseHash = hash('sha256', SnapshotHasher::canonicalJson($result));
+        $resultStatus = strtolower((string) ($result['result_status'] ?? ''));
         $attributes = [
             'status' => 'completed',
             'solver_status' => strtolower((string) ($result['solver_status'] ?? '')),
-            'result_status' => strtolower((string) ($result['result_status'] ?? '')),
+            'result_status' => $resultStatus,
             'solver_config' => is_array($payload['solver_config'] ?? null) ? $payload['solver_config'] : [],
             'solver_execution_ms' => $this->nonNegativeInt($result['solver_execution_ms'] ?? null),
             'objective_value' => is_numeric($result['objective_value'] ?? null)
@@ -140,7 +255,9 @@ final class SchedulingGenerationService
         ];
 
         try {
-            return DB::transaction(function () use ($generation, $payload, $result, $attributes, $sourceResponseHash, $validationStatus, $summary): ?SchedulingCandidate {
+            return DB::transaction(function () use ($generation, $payload, $result, $attributes, $sourceResponseHash, $validationStatus, $summary, $resultStatus): ?SchedulingCandidate {
+                AcademicTerm::query()->whereKey($generation->academic_term_id)->lockForUpdate()->firstOrFail();
+
                 $locked = $this->lockRunningGeneration($generation);
                 if ($locked === null) {
                     Log::warning('scheduling.generation.stale_outcome', [
@@ -150,16 +267,91 @@ final class SchedulingGenerationService
                     return null;
                 }
 
-                AcademicTerm::query()->whereKey($locked->academic_term_id)->lockForUpdate()->firstOrFail();
+                if ($this->leaseExpired($locked)) {
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'generation_lease_expired',
+                        'The generation lease expired before the solver response was persisted.',
+                        [[
+                            'code' => 'generation_lease_expired',
+                            'generation_uuid' => $locked->uuid,
+                        ]],
+                    );
+
+                    return null;
+                }
+
+                if ($this->leaseOwnerMismatch($locked)) {
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'generation_lease_owner_mismatch',
+                        'The generation lease owner does not match this generation.',
+                        [[
+                            'code' => 'generation_lease_owner_mismatch',
+                            'generation_uuid' => $locked->uuid,
+                        ]],
+                    );
+
+                    return null;
+                }
+
+                $lockedTerm = AcademicTerm::query()->whereKey($locked->academic_term_id)->lockForUpdate()->firstOrFail();
+
+                $frozenSourceErrors = $this->frozenSourceErrors($locked, $lockedTerm, $payload);
+                if ($frozenSourceErrors !== []) {
+                    Log::warning('scheduling.generation.stale_source_context', [
+                        'generation_id' => $generation->uuid,
+                        'error_count' => count($frozenSourceErrors),
+                    ]);
+
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'stale_source_context',
+                        'Scheduling inputs changed while the solver was running.',
+                        $frozenSourceErrors,
+                    );
+
+                    return null;
+                }
+
+                $responseIdentityErrors = $this->responseIdentityErrors($locked, $payload, $result);
+                if ($responseIdentityErrors !== []) {
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'solver_response_identity_mismatch',
+                        'The solver response does not belong to this generation.',
+                        $responseIdentityErrors,
+                    );
+
+                    return null;
+                }
+
+                $persistedAttributes = [
+                    ...$attributes,
+                    'diagnostics' => $this->mergeDiagnostics(
+                        $locked->diagnostics,
+                        $attributes['diagnostics'] ?? null,
+                    ),
+                ];
+
+                if ($resultStatus !== 'feasible') {
+                    $locked->forceFill($persistedAttributes)->save();
+
+                    return null;
+                }
 
                 if (! $this->candidateResponseIsComplete($result)) {
-                    $locked->forceFill([
-                        ...$attributes,
-                        'status' => 'failed',
-                        'failure_code' => 'solver_candidate_incomplete',
-                        'failure_message' => 'The solver response does not contain a complete validated candidate.',
-                        'diagnostics' => [$summary],
-                    ])->save();
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'solver_candidate_incomplete',
+                        'The solver response does not contain a complete validated candidate.',
+                        [$summary],
+                    );
 
                     return null;
                 }
@@ -171,19 +363,19 @@ final class SchedulingGenerationService
                         'error_count' => count($referenceErrors),
                     ]);
 
-                    $locked->forceFill([
-                        ...$attributes,
-                        'status' => 'failed',
-                        'failure_code' => 'solver_reference_validation_failed',
-                        'failure_message' => 'The solver response references records that are no longer authoritative.',
-                        'diagnostics' => $referenceErrors,
-                    ])->save();
+                    $this->failLockedGeneration(
+                        $locked,
+                        $attributes,
+                        'solver_reference_validation_failed',
+                        'The solver response references records that are no longer authoritative.',
+                        $referenceErrors,
+                    );
 
                     return null;
                 }
 
                 $candidate = $this->persistCandidate($locked, $payload, $result, $validationStatus, $sourceResponseHash);
-                $locked->forceFill($attributes)->save();
+                $locked->forceFill($persistedAttributes)->save();
 
                 return $candidate;
             });
@@ -198,7 +390,7 @@ final class SchedulingGenerationService
                 $attributes,
                 'candidate_persistence_failed',
                 'The solver response could not be persisted as a candidate.',
-                [['message' => $exception->getMessage()]],
+                [['code' => 'candidate_persistence_failed']],
             );
 
             return null;
@@ -209,9 +401,118 @@ final class SchedulingGenerationService
     {
         return SchedulingGeneration::query()
             ->whereKey($generation->id)
-            ->whereIn('status', ['queued', 'running'])
+            ->where('uuid', $generation->uuid)
+            ->whereIn('status', self::ACTIVE_STATUSES)
             ->lockForUpdate()
             ->first();
+    }
+
+    private function frozenSourceErrors(
+        SchedulingGeneration $generation,
+        AcademicTerm $term,
+        array $payload,
+    ): array {
+        $diagnostics = is_array($generation->diagnostics) ? $generation->diagnostics : [];
+        $frozen = is_array($diagnostics['frozen_source'] ?? null) ? $diagnostics['frozen_source'] : [];
+
+        if ($frozen === []) {
+            return [['code' => 'missing_frozen_source_fingerprint']];
+        }
+
+        $rebuild = $this->requestBuilder->build(
+            $term,
+            is_string($generation->correlation_id) ? $generation->correlation_id : null,
+            $generation->uuid,
+        );
+
+        if (! $rebuild->isSuccessful()) {
+            return [[
+                'code' => 'source_context_no_longer_buildable',
+                'issues' => $rebuild->issues(),
+            ]];
+        }
+
+        $currentPayload = $rebuild->payload();
+        $snapshotHash = (string) SchedulingSnapshot::query()
+            ->whereKey($generation->scheduling_snapshot_id)
+            ->value('content_sha256');
+        $errors = [];
+
+        if (! hash_equals((string) ($frozen['snapshot_sha256'] ?? ''), $snapshotHash)
+            || ! hash_equals($snapshotHash, (string) Arr::get($payload, 'metadata.snapshot_sha256', ''))
+            || ! hash_equals($snapshotHash, SnapshotHasher::hash($currentPayload))) {
+            $errors[] = ['code' => 'snapshot_sha256_mismatch'];
+        }
+
+        if (! hash_equals((string) ($frozen['fingerprint'] ?? ''), $this->sourceFingerprint($currentPayload))) {
+            $errors[] = ['code' => 'source_fingerprint_mismatch'];
+        }
+
+        if (! hash_equals((string) ($frozen['contract_version'] ?? ''), (string) Arr::get($currentPayload, 'contract_version', ''))) {
+            $errors[] = ['code' => 'contract_version_mismatch'];
+        }
+
+        $currentSolverConfigHash = hash('sha256', SnapshotHasher::canonicalJson(
+            is_array($currentPayload['solver_config'] ?? null) ? $currentPayload['solver_config'] : [],
+        ));
+        if (! hash_equals((string) ($frozen['solver_config_sha256'] ?? ''), $currentSolverConfigHash)) {
+            $errors[] = ['code' => 'solver_config_mismatch'];
+        }
+
+        return $errors;
+    }
+
+    private function responseIdentityErrors(
+        SchedulingGeneration $generation,
+        array $payload,
+        array $result,
+    ): array {
+        $errors = [];
+        $expectedGenerationId = $generation->uuid;
+
+        if (! hash_equals($expectedGenerationId, (string) Arr::get($payload, 'metadata.generation_id', ''))
+            || ! hash_equals($expectedGenerationId, (string) ($result['generation_id'] ?? ''))) {
+            $errors[] = ['code' => 'generation_id_mismatch'];
+        }
+
+        $expectedCorrelationId = $generation->correlation_id;
+        if ($expectedCorrelationId !== null
+            && (! hash_equals((string) $expectedCorrelationId, (string) Arr::get($payload, 'metadata.correlation_id', ''))
+                || ! hash_equals((string) $expectedCorrelationId, (string) ($result['correlation_id'] ?? '')))) {
+            $errors[] = ['code' => 'correlation_id_mismatch'];
+        }
+
+        if (! hash_equals((string) $generation->academic_term_id, (string) ($result['academic_term_id'] ?? ''))) {
+            $errors[] = ['code' => 'academic_term_id_mismatch'];
+        }
+
+        $snapshotHash = (string) Arr::get($payload, 'metadata.snapshot_sha256', '');
+        if (! hash_equals($snapshotHash, (string) ($result['snapshot_sha256'] ?? ''))) {
+            $errors[] = ['code' => 'snapshot_sha256_mismatch'];
+        }
+
+        return $errors;
+    }
+
+    private function failLockedGeneration(
+        SchedulingGeneration $generation,
+        array $attributes,
+        string $failureCode,
+        string $failureMessage,
+        ?array $diagnostics = null,
+    ): void {
+        $generation->forceFill([
+            ...$attributes,
+            'status' => 'failed',
+            'failure_code' => $failureCode,
+            'failure_message' => $failureMessage,
+            'diagnostics' => $this->mergeDiagnostics(
+                $generation->diagnostics,
+                $diagnostics ?? ($attributes['diagnostics'] ?? null),
+            ),
+            'completed_at' => now(),
+            'result_status' => $attributes['result_status'] ?? null,
+        ])->save();
     }
 
     private function recordGenerationFailure(
@@ -222,20 +523,45 @@ final class SchedulingGenerationService
         ?array $diagnostics = null,
     ): void {
         DB::transaction(function () use ($generation, $attributes, $failureCode, $failureMessage, $diagnostics): void {
+            AcademicTerm::query()->whereKey($generation->academic_term_id)->lockForUpdate()->firstOrFail();
+
             $locked = $this->lockRunningGeneration($generation);
             if ($locked === null) {
                 return;
             }
 
-            $locked->forceFill([
-                ...$attributes,
-                'status' => 'failed',
-                'failure_code' => $failureCode,
-                'failure_message' => $failureMessage,
-                'diagnostics' => $diagnostics ?? ($attributes['diagnostics'] ?? null),
-                'completed_at' => now(),
-            ])->save();
+            $this->failLockedGeneration(
+                $locked,
+                $attributes,
+                $failureCode,
+                $failureMessage,
+                $diagnostics,
+            );
         });
+    }
+
+    private function mergeDiagnostics(mixed $existing, mixed $additional): ?array
+    {
+        $base = is_array($existing) ? $existing : [];
+        $extra = is_array($additional) ? $additional : (is_string($additional) ? ['message' => $additional] : []);
+
+        if ($base === []) {
+            return $extra === [] ? null : $extra;
+        }
+
+        if ($extra === []) {
+            return $base;
+        }
+
+        if (array_is_list($base)) {
+            return array_is_list($extra) ? array_merge($base, $extra) : [...$base, $extra];
+        }
+
+        if (array_is_list($extra)) {
+            $extra = ['events' => $extra];
+        }
+
+        return array_replace_recursive($base, $extra);
     }
 
     private function candidateResponseIsComplete(array $result): bool
@@ -255,6 +581,7 @@ final class SchedulingGenerationService
             'solver_status' => $generation->solver_status,
             'result_status' => $generation->result_status,
             'failure_code' => $generation->failure_code,
+            'failure_message' => $generation->failure_message,
             'completed_at' => $generation->completed_at?->toIso8601String(),
         ];
     }
@@ -460,7 +787,7 @@ final class SchedulingGenerationService
 
         $summary = is_array($result['validation_summary'] ?? null) ? $result['validation_summary'] : [];
 
-        $candidate = SchedulingCandidate::query()->create([
+        $candidate = SchedulingCandidate::query()->forceCreate([
             'uuid' => (string) Str::uuid(),
             'scheduling_generation_id' => $generation->id,
             'academic_term_id' => $generation->academic_term_id,
@@ -476,10 +803,12 @@ final class SchedulingGenerationService
             'created_by_user_id' => $generation->requested_by_user_id,
         ]);
 
-        CandidateStatusEvent::query()->create([
+        CandidateStatusEvent::query()->forceCreate([
             'scheduling_candidate_id' => $candidate->id,
             'to_status' => 'generated',
             'metadata' => [
+                'event_type' => 'candidate_generated',
+                'is_status_transition' => true,
                 'generation_uuid' => $generation->uuid,
                 'result_status' => $result['result_status'] ?? null,
             ],
@@ -538,7 +867,7 @@ final class SchedulingGenerationService
                 $placementChangeStatus = $samePlacement ? 'unchanged' : 'moved';
             }
 
-            $placement = CandidateMeetingPlacement::query()->create([
+            $placement = CandidateMeetingPlacement::query()->forceCreate([
                 'uuid' => (string) Str::uuid(),
                 'scheduling_candidate_id' => $candidate->id,
                 'offering_meeting_requirement_id' => (int) $assignment['source_requirement_id'],
@@ -569,7 +898,7 @@ final class SchedulingGenerationService
             $offeringRowsByStringId = [];
 
             foreach (array_values($this->identifierList($assignment['subject_offering_ids'] ?? null)) as $index => $offeringId) {
-                $offeringRowsByStringId[$offeringId] = CandidateMeetingOffering::query()->create([
+                $offeringRowsByStringId[$offeringId] = CandidateMeetingOffering::query()->forceCreate([
                     'candidate_meeting_placement_id' => $placement->id,
                     'subject_offering_id' => (int) $offeringId,
                     'is_primary' => $index === 0,
@@ -592,7 +921,7 @@ final class SchedulingGenerationService
                     throw new RuntimeException('A professor assignment references an unknown meeting offering.');
                 }
 
-                CandidateMeetingProfessor::query()->create([
+                CandidateMeetingProfessor::query()->forceCreate([
                     'candidate_meeting_placement_id' => $placement->id,
                     'candidate_meeting_offering_id' => $offeringRow->id,
                     'subject_offering_id' => (int) $offeringId,
@@ -604,7 +933,7 @@ final class SchedulingGenerationService
 
             $roomId = $assignment['room_id'] ?? null;
             if ($roomId !== null) {
-                CandidateRoomAllocation::query()->create([
+                CandidateRoomAllocation::query()->forceCreate([
                     'candidate_meeting_placement_id' => $placement->id,
                     'room_id' => (int) $roomId,
                     'status' => 'proposed',

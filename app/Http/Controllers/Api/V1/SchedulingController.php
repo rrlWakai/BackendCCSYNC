@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Exceptions\SchedulingGenerationConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Scheduling\CancelScheduleAssignmentRequest;
 use App\Http\Requests\Scheduling\IndexFacultyAssignmentsRequest;
@@ -174,11 +175,25 @@ final class SchedulingController extends Controller
             );
         }
 
-        $generation = $this->generations->start($term, $request->user(), $payload);
+        try {
+            $generation = $this->generations->start($term, $request->user(), $payload);
+        } catch (SchedulingGenerationConflictException $exception) {
+            return ApiResponse::error(
+                'Another scheduling generation is already running for this academic term.',
+                409,
+                [
+                    'academic_term_id' => $exception->academicTermId,
+                    'generation_uuid' => $exception->generationUuid,
+                ],
+                'scheduling_generation_conflict',
+            );
+        }
+
         $response = $this->scheduler->solve($payload);
 
         if (! $response->isOk()) {
             $this->generations->recordFailure($generation, $response);
+            $generation->refresh();
             $details = $response->getBody() ?? [];
             if (! is_array($details)) {
                 $details = ['message' => $details];
@@ -204,6 +219,35 @@ final class SchedulingController extends Controller
         ];
 
         if ($candidate === null) {
+            $failureCode = $generation->failure_code;
+            $resultStatus = strtoupper((string) ($generation->result_status ?? ''));
+
+            if (in_array($resultStatus, ['INFEASIBLE', 'UNKNOWN', 'TIME_LIMIT'], true)
+                && $generation->status === 'completed') {
+                return ApiResponse::success(
+                    $data,
+                    'Scheduling completed without a feasible candidate.',
+                );
+            }
+
+            if (is_string($failureCode) && $failureCode !== '') {
+                $isStale = in_array($failureCode, [
+                    'stale_source_context',
+                    'generation_lease_expired',
+                    'generation_lease_owner_mismatch',
+                    'solver_response_identity_mismatch',
+                ], true);
+
+                return ApiResponse::error(
+                    $isStale
+                        ? 'The scheduling generation is stale and was not persisted.'
+                        : 'The scheduling generation failed.',
+                    $isStale ? 409 : 502,
+                    $data,
+                    $failureCode,
+                );
+            }
+
             return ApiResponse::error(
                 'The scheduling response could not be persisted as a candidate.',
                 502,

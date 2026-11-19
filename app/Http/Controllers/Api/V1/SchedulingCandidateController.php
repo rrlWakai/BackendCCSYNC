@@ -64,7 +64,12 @@ final class SchedulingCandidateController extends Controller
                     );
                 }
 
-                $revision = $this->revisions->createFromRevision($parent, $request->user(), $changeSummary);
+                $revision = $this->revisions->createFromRevision(
+                    $parent,
+                    $request->user(),
+                    $changeSummary,
+                    (int) $request->validated('expected_version'),
+                );
             } else {
                 $revision = $this->revisions->createFromCandidate($candidate, $request->user(), $changeSummary);
             }

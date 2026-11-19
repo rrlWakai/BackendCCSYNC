@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 
 class CandidateMeetingProfessor extends Model
 {
@@ -25,6 +26,17 @@ class CandidateMeetingProfessor extends Model
         return [
             'is_primary' => 'boolean',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (): never {
+            throw new LogicException('Generated candidate placements are immutable.');
+        });
+
+        static::deleting(function (): never {
+            throw new LogicException('Generated candidate placements are immutable.');
+        });
     }
 
     public function placement(): BelongsTo

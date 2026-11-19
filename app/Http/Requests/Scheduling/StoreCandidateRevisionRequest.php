@@ -21,6 +21,12 @@ final class StoreCandidateRevisionRequest extends FormRequest
                 'string',
                 'max:1000',
             ],
+            'expected_version' => [
+                Rule::requiredIf(fn (): bool => $this->filled('parent_revision_uuid')),
+                'sometimes',
+                'integer',
+                'min:1',
+            ],
             'parent_revision_uuid' => [
                 'sometimes',
                 'nullable',

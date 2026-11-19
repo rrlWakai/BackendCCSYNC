@@ -87,13 +87,14 @@ final class SchedulerResponse
         );
     }
 
-    public static function invalidResponse(string $message): self
+    public static function invalidResponse(string $message, array $details = []): self
     {
         return new self(
             ok: false,
             message: $message,
             errorCode: 'invalid_response',
             httpStatus: 502,
+            body: ['details' => $details],
         );
     }
 

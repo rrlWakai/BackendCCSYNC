@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 class CandidateMeetingPlacement extends Model
 {
@@ -17,7 +18,6 @@ class CandidateMeetingPlacement extends Model
         'uuid',
         'scheduling_candidate_id',
         'offering_meeting_requirement_id',
-        'previous_published_schedule_id',
         'meeting_instance_id',
         'occurrence_number',
         'day_of_week',
@@ -27,12 +27,6 @@ class CandidateMeetingPlacement extends Model
         'meeting_type',
         'modality',
         'is_primary',
-        'status',
-        'previous_meeting_instance_id',
-        'placement_change_status',
-        'previous_day_of_week',
-        'previous_start_time',
-        'previous_end_time',
     ];
 
     protected function casts(): array
@@ -44,6 +38,17 @@ class CandidateMeetingPlacement extends Model
             'is_primary' => 'boolean',
             'previous_day_of_week' => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (): never {
+            throw new LogicException('Generated candidate placements are immutable.');
+        });
+
+        static::deleting(function (): never {
+            throw new LogicException('Generated candidate placements are immutable.');
+        });
     }
 
     public function candidate(): BelongsTo

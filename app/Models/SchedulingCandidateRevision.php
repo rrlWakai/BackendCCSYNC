@@ -6,10 +6,28 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 class SchedulingCandidateRevision extends Model
 {
     use HasFactory;
+
+    private const IMMUTABLE_IDENTITY_FIELDS = [
+        'uuid',
+        'scheduling_candidate_id',
+        'parent_revision_id',
+        'revision_number',
+        'base_snapshot_sha256',
+        'base_revision_sha256',
+        'created_by_user_id',
+    ];
+
+    private const IMMUTABLE_CONTENT_FIELDS = [
+        'content_canonical',
+        'content_sha256',
+    ];
+
+    private const IMMUTABLE_CONTENT_STATUSES = ['validated', 'superseded', 'discarded'];
 
     protected $table = 'scheduling_candidate_revisions';
 
@@ -18,19 +36,8 @@ class SchedulingCandidateRevision extends Model
         'scheduling_candidate_id',
         'parent_revision_id',
         'revision_number',
-        'status',
-        'validation_status',
         'content_canonical',
-        'content_sha256',
-        'base_snapshot_sha256',
-        'base_revision_sha256',
-        'version',
         'change_summary',
-        'created_by_user_id',
-        'updated_by_user_id',
-        'validated_by_user_id',
-        'submitted_at',
-        'validated_at',
     ];
 
     protected function casts(): array
@@ -41,6 +48,25 @@ class SchedulingCandidateRevision extends Model
             'submitted_at' => 'datetime',
             'validated_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $revision): void {
+            if ($revision->isDirty(self::IMMUTABLE_IDENTITY_FIELDS)) {
+                throw new LogicException('Candidate revision identity and provenance are immutable.');
+            }
+
+            $originalStatus = (string) $revision->getOriginal('status');
+            if (in_array($originalStatus, self::IMMUTABLE_CONTENT_STATUSES, true)
+                && $revision->isDirty(self::IMMUTABLE_CONTENT_FIELDS)) {
+                throw new LogicException('Historical candidate revision content cannot be overwritten.');
+            }
+        });
+
+        static::deleting(function (): never {
+            throw new LogicException('Candidate revision history cannot be deleted.');
+        });
     }
 
     public function getRouteKeyName(): string
@@ -75,6 +101,8 @@ class SchedulingCandidateRevision extends Model
 
     public function statusEvents(): HasMany
     {
-        return $this->hasMany(CandidateRevisionStatusEvent::class, 'scheduling_candidate_revision_id');
+        return $this->hasMany(CandidateRevisionStatusEvent::class, 'scheduling_candidate_revision_id')
+            ->orderBy('created_at')
+            ->orderBy('id');
     }
 }

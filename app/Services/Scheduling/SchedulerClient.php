@@ -74,7 +74,8 @@ final class SchedulerClient
                 ]);
 
                 return SchedulerResponse::invalidResponse(
-                    'Scheduling service returned a response that does not satisfy Scheduling Contract v1.0.'
+                    'Scheduling service returned a response that does not satisfy Scheduling Contract v1.0.',
+                    $validationErrors,
                 );
             }
 

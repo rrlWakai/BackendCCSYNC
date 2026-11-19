@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 
 class CandidateRoomAllocation extends Model
 {
@@ -15,8 +16,18 @@ class CandidateRoomAllocation extends Model
     protected $fillable = [
         'candidate_meeting_placement_id',
         'room_id',
-        'status',
     ];
+
+    protected static function booted(): void
+    {
+        static::updating(function (): never {
+            throw new LogicException('Generated candidate room allocations are immutable.');
+        });
+
+        static::deleting(function (): never {
+            throw new LogicException('Generated candidate room allocations are immutable.');
+        });
+    }
 
     public function placement(): BelongsTo
     {

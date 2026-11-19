@@ -8,17 +8,36 @@ use App\Models\CandidateRevisionStatusEvent;
 use App\Models\SchedulingCandidate;
 use App\Models\SchedulingCandidateRevision;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 final class SchedulingCandidateRevisionService
 {
+    private const ACTIVE_STATUSES = ['draft', 'under_review', 'validated', 'needs_revision'];
+
+    private const EDITABLE_STATUSES = ['draft', 'needs_revision'];
+
+    private const VALIDATABLE_STATUSES = ['draft', 'under_review', 'needs_revision'];
+
     private const TRANSITIONS = [
         'draft' => ['under_review', 'superseded', 'discarded'],
         'under_review' => ['validated', 'needs_revision', 'superseded', 'discarded'],
         'validated' => ['needs_revision', 'superseded', 'discarded'],
         'needs_revision' => ['draft', 'superseded', 'discarded'],
+    ];
+
+    private const EVENT_TYPE_STATUS_TRANSITION = 'status_transition';
+
+    private const EVENT_TYPE_CONTENT_UPDATE = 'content_update';
+
+    private const EVENT_TYPE_VALIDATION = 'validation';
+
+    private const EVENT_TYPES = [
+        self::EVENT_TYPE_STATUS_TRANSITION,
+        self::EVENT_TYPE_CONTENT_UPDATE,
+        self::EVENT_TYPE_VALIDATION,
     ];
 
     private const ASSIGNMENT_ROLES = ['lead', 'co_instructor', 'lab_instructor', 'substitute'];
@@ -27,9 +46,14 @@ final class SchedulingCandidateRevisionService
         SchedulingCandidate $candidate,
         ?Authenticatable $user,
         string $changeSummary,
+        ?int $expectedCandidateVersion = null,
     ): SchedulingCandidateRevision {
-        return DB::transaction(function () use ($candidate, $user, $changeSummary): SchedulingCandidateRevision {
-            $lockedCandidate = SchedulingCandidate::query()->whereKey($candidate->id)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($candidate, $user, $changeSummary, $expectedCandidateVersion): SchedulingCandidateRevision {
+            $lockedCandidate = $this->lockCandidate($candidate);
+            $this->assertCandidateVersion($lockedCandidate, $expectedCandidateVersion);
+            $this->assertNoActiveRevision($lockedCandidate);
+            $this->assertNonEmptyReason($changeSummary, 'A change summary is required.');
+
             $content = $this->contentFromCandidate($lockedCandidate);
             $revisionNumber = $this->nextRevisionNumber($lockedCandidate->id);
 
@@ -48,20 +72,25 @@ final class SchedulingCandidateRevisionService
         SchedulingCandidateRevision $revision,
         ?Authenticatable $user,
         string $changeSummary,
+        int $expectedVersion,
     ): SchedulingCandidateRevision {
-        return DB::transaction(function () use ($revision, $user, $changeSummary): SchedulingCandidateRevision {
-            $lockedRevision = SchedulingCandidateRevision::query()->whereKey($revision->id)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($revision, $user, $changeSummary, $expectedVersion): SchedulingCandidateRevision {
+            $lockedRevision = $this->lockRevision($revision);
+            $this->assertNonEmptyReason($changeSummary, 'A change summary is required.');
+            $this->assertVersion($lockedRevision, $expectedVersion);
+
+            $lockedCandidate = $this->lockCandidateForRevision($lockedRevision);
+            $this->assertCurrentActiveRevision($lockedCandidate, $lockedRevision);
+            $this->assertSnapshotIsCurrent($lockedRevision, $lockedCandidate);
 
             if (! array_key_exists($lockedRevision->status, self::TRANSITIONS)
                 || ! in_array('superseded', self::TRANSITIONS[$lockedRevision->status], true)) {
                 throw new InvalidCandidateRevisionTransitionException('This candidate revision cannot be superseded.');
             }
 
-            $lockedCandidate = SchedulingCandidate::query()->whereKey($lockedRevision->scheduling_candidate_id)->lockForUpdate()->firstOrFail();
-            $this->assertSnapshotIsCurrent($lockedRevision, $lockedCandidate);
-
             $nextNumber = $this->nextRevisionNumber($lockedCandidate->id);
             $content = $this->decodeContent($lockedRevision->content_canonical);
+            $sourceHash = (string) $lockedRevision->content_sha256;
 
             $this->changeStatusLocked(
                 $lockedRevision,
@@ -81,7 +110,7 @@ final class SchedulingCandidateRevisionService
                 $content,
                 $user,
                 $changeSummary,
-                $this->contentHash($content),
+                $sourceHash,
             );
         });
     }
@@ -94,15 +123,21 @@ final class SchedulingCandidateRevisionService
         string $changeSummary,
     ): SchedulingCandidateRevision {
         return DB::transaction(function () use ($revision, $expectedVersion, $changes, $user, $changeSummary): SchedulingCandidateRevision {
-            $locked = SchedulingCandidateRevision::query()->whereKey($revision->id)->lockForUpdate()->firstOrFail();
+            $locked = $this->lockRevision($revision);
             $this->assertVersion($locked, $expectedVersion);
+            $this->assertNonEmptyReason($changeSummary, 'A change summary is required.');
 
-            if (! in_array($locked->status, ['draft', 'needs_revision'], true)) {
+            if (! in_array($locked->status, self::EDITABLE_STATUSES, true)) {
                 throw new InvalidCandidateRevisionTransitionException('Only draft or needs-revision candidates can be edited.');
             }
 
-            $candidate = SchedulingCandidate::query()->whereKey($locked->scheduling_candidate_id)->firstOrFail();
+            if ($changes === []) {
+                throw new InvalidArgumentException('At least one revision content change is required.');
+            }
+
+            $candidate = $this->lockCandidateForRevision($locked);
             $this->assertSnapshotIsCurrent($locked, $candidate);
+            $this->assertCurrentActiveRevision($candidate, $locked);
 
             $content = $this->decodeContent($locked->content_canonical);
 
@@ -134,6 +169,7 @@ final class SchedulingCandidateRevisionService
                 $expectedVersion,
                 $observedVersion,
                 [
+                    'event_type' => self::EVENT_TYPE_CONTENT_UPDATE,
                     'changed_keys' => array_values(array_intersect(['validation_summary', 'assignments'], array_keys($changes))),
                     'content_sha256' => $contentHash,
                 ],
@@ -150,19 +186,17 @@ final class SchedulingCandidateRevisionService
         string $reason,
     ): array {
         return DB::transaction(function () use ($revision, $expectedVersion, $user, $reason): array {
-            $locked = SchedulingCandidateRevision::query()->whereKey($revision->id)->lockForUpdate()->firstOrFail();
+            $locked = $this->lockRevision($revision);
             $this->assertVersion($locked, $expectedVersion);
+            $this->assertNonEmptyReason($reason, 'A validation reason is required.');
 
-            if (! in_array($locked->status, ['draft', 'under_review', 'needs_revision'], true)) {
+            if (! in_array($locked->status, self::VALIDATABLE_STATUSES, true)) {
                 throw new InvalidCandidateRevisionTransitionException('Only active candidate revisions can be revalidated.');
             }
 
-            if ($reason === '') {
-                throw new InvalidArgumentException('A validation reason is required.');
-            }
-
-            $candidate = SchedulingCandidate::query()->whereKey($locked->scheduling_candidate_id)->firstOrFail();
+            $candidate = $this->lockCandidateForRevision($locked);
             $this->assertSnapshotIsCurrent($locked, $candidate);
+            $this->assertCurrentActiveRevision($candidate, $locked);
 
             $generation = $candidate->generation;
             $snapshot = $generation?->snapshot;
@@ -204,6 +238,10 @@ final class SchedulingCandidateRevisionService
             $content['validation_summary'] = $summary;
             $contentHash = $this->contentHash($content);
             $observedVersion = $locked->version + 1;
+            $fromStatus = $locked->status;
+            $nextStatus = $errors !== [] && $fromStatus === 'under_review'
+                ? 'needs_revision'
+                : $fromStatus;
 
             $locked->forceFill([
                 'content_canonical' => SnapshotHasher::canonicalJson($content),
@@ -216,18 +254,31 @@ final class SchedulingCandidateRevisionService
 
             $this->recordEvent(
                 $locked,
-                $locked->status,
-                $locked->status,
+                $fromStatus,
+                $nextStatus,
                 $user,
                 $reason,
                 $expectedVersion,
                 $observedVersion,
                 [
+                    'event_type' => self::EVENT_TYPE_VALIDATION,
                     'validation_status' => $validationStatus,
+                    'error_count' => count($errors),
                     'errors' => $errors,
                     'content_sha256' => $contentHash,
                 ],
             );
+
+            if ($nextStatus !== $fromStatus) {
+                $this->changeStatusLocked(
+                    $locked,
+                    $nextStatus,
+                    $observedVersion,
+                    $user,
+                    $reason,
+                    ['validation_failed' => true],
+                );
+            }
 
             return [
                 'revision' => $locked,
@@ -244,12 +295,13 @@ final class SchedulingCandidateRevisionService
         ?Authenticatable $user,
     ): SchedulingCandidateRevision {
         return DB::transaction(function () use ($revision, $expectedVersion, $toStatus, $reason, $user): SchedulingCandidateRevision {
-            $locked = SchedulingCandidateRevision::query()->whereKey($revision->id)->lockForUpdate()->firstOrFail();
+            $locked = $this->lockRevision($revision);
             $this->assertVersion($locked, $expectedVersion);
+            $this->assertNonEmptyReason($reason, 'A transition reason is required.');
 
-            if ($reason === '') {
-                throw new InvalidArgumentException('A transition reason is required.');
-            }
+            $candidate = $this->lockCandidateForRevision($locked);
+            $this->assertCurrentActiveRevision($candidate, $locked);
+            $this->assertSnapshotIsCurrent($locked, $candidate);
 
             $allowed = self::TRANSITIONS[$locked->status] ?? [];
             if (! in_array($toStatus, $allowed, true)) {
@@ -258,8 +310,9 @@ final class SchedulingCandidateRevisionService
                 );
             }
 
-            if ($toStatus === 'validated' && $locked->validation_status !== 'valid') {
-                throw new InvalidCandidateRevisionTransitionException('Only a valid candidate revision can be validated.');
+            if (in_array($toStatus, ['under_review', 'validated'], true)
+                && $locked->validation_status !== 'valid') {
+                throw new InvalidCandidateRevisionTransitionException('Only a valid candidate revision can enter review or validation.');
             }
 
             return $this->changeStatusLocked($locked, $toStatus, $expectedVersion, $user, $reason);
@@ -291,15 +344,20 @@ final class SchedulingCandidateRevisionService
 
     public function eventSummary(CandidateRevisionStatusEvent $event): array
     {
+        $eventType = $this->eventType($event);
+        $metadata = is_array($event->metadata) ? $event->metadata : [];
+
         return [
             'id' => $event->id,
+            'event_type' => $eventType,
+            'is_status_transition' => $eventType === self::EVENT_TYPE_STATUS_TRANSITION,
             'from_status' => $event->from_status,
             'to_status' => $event->to_status,
             'actor_user_id' => $event->actor_user_id,
             'reason' => $event->reason,
             'expected_version' => $event->expected_version,
             'observed_version' => $event->observed_version,
-            'metadata' => $event->metadata,
+            'metadata' => $metadata,
             'created_at' => $event->created_at?->toIso8601String(),
         ];
     }
@@ -313,7 +371,7 @@ final class SchedulingCandidateRevisionService
         string $changeSummary,
         ?string $baseRevisionHash = null,
     ): SchedulingCandidateRevision {
-        $revision = SchedulingCandidateRevision::query()->create([
+        $revision = SchedulingCandidateRevision::query()->forceCreate([
             'uuid' => (string) Str::uuid(),
             'scheduling_candidate_id' => $candidate->id,
             'parent_revision_id' => $parentRevisionId,
@@ -338,8 +396,10 @@ final class SchedulingCandidateRevisionService
             null,
             1,
             [
+                'event_type' => self::EVENT_TYPE_STATUS_TRANSITION,
                 'revision_number' => $revisionNumber,
                 'parent_revision_id' => $parentRevisionId,
+                'initial_state' => $parentRevisionId === null,
             ],
         );
 
@@ -355,6 +415,11 @@ final class SchedulingCandidateRevisionService
         array $metadata = [],
     ): SchedulingCandidateRevision {
         $fromStatus = $revision->status;
+        $this->assertStatusValidationCompatible(
+            $toStatus,
+            is_string($revision->validation_status) ? $revision->validation_status : 'not_validated',
+        );
+
         $attributes = [
             'status' => $toStatus,
             'version' => $revision->version + 1,
@@ -380,7 +445,10 @@ final class SchedulingCandidateRevisionService
             $reason,
             $expectedVersion,
             $attributes['version'],
-            $metadata,
+            [
+                'event_type' => self::EVENT_TYPE_STATUS_TRANSITION,
+                ...$metadata,
+            ],
         );
 
         return $revision;
@@ -393,6 +461,90 @@ final class SchedulingCandidateRevisionService
                 "Candidate revision version {$expectedVersion} is stale; current version is {$revision->version}.",
             );
         }
+    }
+
+    private function lockCandidate(SchedulingCandidate $candidate): SchedulingCandidate
+    {
+        return SchedulingCandidate::query()->whereKey($candidate->id)->lockForUpdate()->firstOrFail();
+    }
+
+    private function lockRevision(SchedulingCandidateRevision $revision): SchedulingCandidateRevision
+    {
+        return SchedulingCandidateRevision::query()->whereKey($revision->id)->lockForUpdate()->firstOrFail();
+    }
+
+    private function lockCandidateForRevision(SchedulingCandidateRevision $revision): SchedulingCandidate
+    {
+        return SchedulingCandidate::query()
+            ->whereKey($revision->scheduling_candidate_id)
+            ->lockForUpdate()
+            ->firstOrFail();
+    }
+
+    private function assertCandidateVersion(SchedulingCandidate $candidate, ?int $expectedVersion): void
+    {
+        if ($expectedVersion !== null && $candidate->version !== $expectedVersion) {
+            throw new StaleCandidateRevisionException(
+                "Candidate version {$expectedVersion} is stale; current version is {$candidate->version}.",
+            );
+        }
+    }
+
+    private function assertNoActiveRevision(SchedulingCandidate $candidate): void
+    {
+        $exists = SchedulingCandidateRevision::query()
+            ->where('scheduling_candidate_id', $candidate->id)
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->lockForUpdate()
+            ->exists();
+
+        if ($exists) {
+            throw new StaleCandidateRevisionException(
+                'This candidate already has an active revision.',
+            );
+        }
+    }
+
+    private function assertCurrentActiveRevision(
+        SchedulingCandidate $candidate,
+        SchedulingCandidateRevision $revision,
+    ): void {
+        $activeRevisions = SchedulingCandidateRevision::query()
+            ->where('scheduling_candidate_id', $candidate->id)
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->lockForUpdate()
+            ->get(['id']);
+
+        if ($activeRevisions->count() !== 1 || ! $activeRevisions->contains('id', $revision->id)) {
+            throw new StaleCandidateRevisionException(
+                'The supplied revision is not the candidate’s current active revision.',
+            );
+        }
+    }
+
+    private function assertStatusValidationCompatible(string $status, string $validationStatus): void
+    {
+        if (in_array($status, ['under_review', 'validated'], true) && $validationStatus !== 'valid') {
+            throw new InvalidCandidateRevisionTransitionException(
+                'A revision cannot enter review or validation without a valid validation result.',
+            );
+        }
+    }
+
+    private function assertNonEmptyReason(string $reason, string $message): void
+    {
+        if (trim($reason) === '') {
+            throw new InvalidArgumentException($message);
+        }
+    }
+
+    private function eventType(CandidateRevisionStatusEvent $event): string
+    {
+        $type = Arr::get(is_array($event->metadata) ? $event->metadata : [], 'event_type');
+
+        return is_string($type) && in_array($type, self::EVENT_TYPES, true)
+            ? $type
+            : self::EVENT_TYPE_STATUS_TRANSITION;
     }
 
     private function assertSnapshotIsCurrent(
@@ -421,7 +573,7 @@ final class SchedulingCandidateRevisionService
         int $observedVersion,
         array $metadata,
     ): void {
-        CandidateRevisionStatusEvent::query()->create([
+        CandidateRevisionStatusEvent::query()->forceCreate([
             'scheduling_candidate_revision_id' => $revision->id,
             'from_status' => $fromStatus,
             'to_status' => $toStatus,

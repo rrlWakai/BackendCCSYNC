@@ -38,8 +38,11 @@ final class SchedulingRequestBuilder
         private readonly SchedulingConfigurationProvider $configuration,
     ) {}
 
-    public function build(AcademicTerm $term, ?string $correlationId = null): SchedulingRequestBuildResult
-    {
+    public function build(
+        AcademicTerm $term,
+        ?string $correlationId = null,
+        ?string $generationId = null,
+    ): SchedulingRequestBuildResult {
         $issues = [];
 
         $offerings = $this->loadOfferings($term);
@@ -116,7 +119,7 @@ final class SchedulingRequestBuilder
         $payload = [
             'contract_version' => (string) config('scheduler.contract_version', '1.0'),
             'metadata' => [
-                'generation_id' => (string) Str::uuid(),
+                'generation_id' => $generationId ?? (string) Str::uuid(),
                 'requested_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
                 'academic_term_id' => (string) $term->id,
                 'snapshot_version' => 1,

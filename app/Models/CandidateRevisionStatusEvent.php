@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 
 class CandidateRevisionStatusEvent extends Model
 {
@@ -14,17 +15,7 @@ class CandidateRevisionStatusEvent extends Model
 
     public $timestamps = false;
 
-    protected $fillable = [
-        'scheduling_candidate_revision_id',
-        'from_status',
-        'to_status',
-        'actor_user_id',
-        'reason',
-        'expected_version',
-        'observed_version',
-        'metadata',
-        'created_at',
-    ];
+    protected $guarded = ['*'];
 
     protected function casts(): array
     {
@@ -34,6 +25,17 @@ class CandidateRevisionStatusEvent extends Model
             'metadata' => 'array',
             'created_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(function (): never {
+            throw new LogicException('Audit events cannot be updated.');
+        });
+
+        static::deleting(function (): never {
+            throw new LogicException('Audit events cannot be deleted.');
+        });
     }
 
     public function revision(): BelongsTo

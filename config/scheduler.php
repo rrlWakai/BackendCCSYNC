@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+$schedulerTimeout = max(1, (int) env('SCHEDULER_TIMEOUT', 60));
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -22,7 +24,12 @@ return [
 
     'connect_timeout' => (int) env('SCHEDULER_CONNECT_TIMEOUT', 5),
 
-    'timeout' => (int) env('SCHEDULER_TIMEOUT', 60),
+    'timeout' => $schedulerTimeout,
+
+    'generation_lease_seconds' => max(60, (int) env(
+        'SCHEDULER_GENERATION_LEASE_SECONDS',
+        max(300, $schedulerTimeout + 120),
+    )),
 
     'health_cache_seconds' => max(1, (int) env('SCHEDULER_HEALTH_CACHE_SECONDS', 30)),
 
