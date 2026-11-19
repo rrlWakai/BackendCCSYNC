@@ -10,30 +10,23 @@ use App\Models\Room;
 use App\Models\ScheduleConflict;
 use App\Models\Section;
 use App\Models\SubjectOffering;
+use App\Services\Scheduling\Contracts\SchedulingConfigurationProvider;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
 final class SchedulingReadinessService
 {
-    private const CAPABILITIES = [
-        'time_grid' => false,
-        'meeting_plans' => false,
-        'full_time_workday_policy' => false,
-        'part_time_workload_targets' => false,
-        'section_availability' => false,
-        'combined_classes' => false,
-        'generation_records' => false,
-        'snapshot_history' => false,
-        'candidate_persistence' => false,
-        'published_meeting_instance_linkage' => false,
+    private const LIFECYCLE_ISSUE_CODES = [
+        'generation_records_not_configured',
+        'snapshot_history_not_configured',
+        'candidate_persistence_not_configured',
+        'published_baseline_unlinked',
     ];
 
-    private const GENERATION_REQUIRED_CAPABILITIES = [
-        'time_grid',
-        'meeting_plans',
-        'generation_records',
-        'snapshot_history',
-        'candidate_persistence',
+    private const INTEGRATION_ISSUE_CODES = [
+        'scheduler_service_not_configured',
+        'scheduler_api_key_not_configured',
+        'scheduler_contract_version_unsupported',
     ];
 
     private const ASSIGNMENT_ROLES = ['lead', 'co_instructor', 'lab_instructor', 'substitute'];
@@ -41,6 +34,10 @@ final class SchedulingReadinessService
     private const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'visiting'];
 
     private const ROOM_TYPES = ['lecture', 'laboratory', 'seminar', 'office', 'other'];
+
+    public function __construct(
+        private readonly SchedulingConfigurationProvider $configuration,
+    ) {}
 
     public function inspect(AcademicTerm $term): array
     {
@@ -95,21 +92,48 @@ final class SchedulingReadinessService
             ->count();
 
         $issues = [];
+        $timeGrid = $this->configuration->timeGrid($term);
+        $meetingPlans = $this->configuration->meetingPlans($term, $offerings);
 
+        $this->inspectIntegration($issues);
         $this->inspectTerm($term, $issues);
         $this->inspectOfferings($term, $offerings, $issues);
         $this->inspectCurriculum($term, $offerings, $issues);
         $assignedProfessors = $this->inspectAssignments($offerings, $issues);
+        $fullTimePolicy = $this->configuration->fullTimeWorkdayPolicy($term, $assignedProfessors->values());
+        $capabilities = $this->capabilities(
+            $timeGrid,
+            $meetingPlans,
+            $offerings,
+            $assignedProfessors,
+            $fullTimePolicy,
+        );
+
         $this->inspectAvailability($term, $assignedProfessors, $issues);
         $this->inspectRooms($rooms, $offerings, $issues);
         $this->inspectPublishedSchedules($publishedSchedules, $offeringIds, $issues);
         $this->inspectDraftsAndConflicts($draftCount, $openConflictCount, $issues);
-        $this->inspectCapabilities($term, $offerings, $assignedProfessors, $issues);
+        $this->inspectCapabilities($term, $offerings, $assignedProfessors, $timeGrid, $meetingPlans, $capabilities, $issues);
+
+        $issues = array_map(function (array $issue): array {
+            $issue['layer'] = match (true) {
+                in_array($issue['code'], self::INTEGRATION_ISSUE_CODES, true) => 'integration',
+                in_array($issue['code'], self::LIFECYCLE_ISSUE_CODES, true) => 'lifecycle',
+                default => 'generation_data',
+            };
+
+            return $issue;
+        }, $issues);
+
+        $layers = [
+            'integration' => $this->layerSummary($issues, 'integration'),
+            'generation_data' => $this->layerSummary($issues, 'generation_data'),
+            'lifecycle' => $this->layerSummary($issues, 'lifecycle'),
+        ];
 
         $blockingCount = $this->countSeverity($issues, 'blocking');
         $warningCount = $this->countSeverity($issues, 'warning');
         $infoCount = $this->countSeverity($issues, 'info');
-        $capabilityGap = ! $this->hasRequiredGenerationCapabilities();
 
         return [
             'academic_term' => [
@@ -122,7 +146,10 @@ final class SchedulingReadinessService
                 'ends_on' => $term->ends_on?->toDateString(),
             ],
             'ready' => $blockingCount === 0,
-            'generation_available' => $blockingCount === 0 && ! $capabilityGap,
+            'integration_ready' => $layers['integration']['ready'],
+            'generation_data_ready' => $layers['generation_data']['ready'],
+            'lifecycle_ready' => $layers['lifecycle']['ready'],
+            'generation_available' => $layers['integration']['ready'] && $layers['generation_data']['ready'],
             'blocking_count' => $blockingCount,
             'warning_count' => $warningCount,
             'info_count' => $infoCount,
@@ -150,9 +177,47 @@ final class SchedulingReadinessService
                 'open_conflicts' => $openConflictCount,
             ],
             'issues' => $issues,
-            'capabilities' => self::CAPABILITIES,
+            'layers' => $layers,
+            'capabilities' => $capabilities,
             'inspected_at' => now()->toIso8601String(),
         ];
+    }
+
+    private function inspectIntegration(array &$issues): void
+    {
+        $url = config('scheduler.url');
+
+        if (! is_string($url) || trim($url) === '' || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'scheduler_service_not_configured',
+                'integration',
+                'SCHEDULER_URL is not configured with a valid URL. The scheduling engine cannot be reached.',
+            );
+        }
+
+        $apiKey = config('scheduler.api_key');
+
+        if (! is_string($apiKey) || trim($apiKey) === '') {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'scheduler_api_key_not_configured',
+                'integration',
+                'SCHEDULER_API_KEY is not configured. The scheduling engine will reject requests.',
+            );
+        }
+
+        if (config('scheduler.contract_version') !== '1.0') {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'scheduler_contract_version_unsupported',
+                'integration',
+                'The configured scheduler contract version is not supported by this backend.',
+            );
+        }
     }
 
     private function inspectTerm(AcademicTerm $term, array &$issues): void
@@ -819,36 +884,245 @@ final class SchedulingReadinessService
         }
     }
 
+    /**
+     * @param  array<string, mixed>|null  $timeGrid
+     * @param  array<int|string, array<string, mixed>>  $meetingPlans
+     * @param  array<string, mixed>|null  $fullTimePolicy
+     * @return array<string, bool>
+     */
+    private function capabilities(
+        ?array $timeGrid,
+        array $meetingPlans,
+        Collection $offerings,
+        Collection $professors,
+        ?array $fullTimePolicy,
+    ): array {
+        $plansComplete = $offerings->isNotEmpty() && $offerings->every(
+            fn (SubjectOffering $offering): bool => $this->isValidMeetingPlanPayload(
+                $this->meetingPlanFor($meetingPlans, $offering->id),
+            ),
+        );
+
+        $fullTimeProfessors = $professors->filter(fn ($professor): bool => $professor->employment_type === 'full_time');
+        $partTimeProfessors = $professors->filter(fn ($professor): bool => $professor->employment_type === 'part_time');
+        $partTimeTargetsComplete = $partTimeProfessors->isNotEmpty() && $partTimeProfessors->every(
+            fn ($professor): bool => $this->configuration->partTimeWeeklyTargetMinutes($professor) !== null,
+        );
+
+        return [
+            'time_grid' => $this->isValidTimeGridPayload($timeGrid),
+            'meeting_plans' => $plansComplete,
+            'full_time_workday_policy' => $fullTimeProfessors->isEmpty()
+                || $this->isValidFullTimePolicyPayload($fullTimePolicy),
+            'part_time_workload_targets' => $partTimeProfessors->isEmpty() || $partTimeTargetsComplete,
+            'section_availability' => false,
+            'combined_classes' => false,
+            'generation_records' => false,
+            'snapshot_history' => false,
+            'candidate_persistence' => false,
+            'published_meeting_instance_linkage' => false,
+        ];
+    }
+
+    /**
+     * @param  array<int|string, array<string, mixed>>  $meetingPlans
+     * @return array<string, mixed>|null
+     */
+    private function meetingPlanFor(array $meetingPlans, int $offeringId): ?array
+    {
+        $plan = $meetingPlans[$offeringId] ?? $meetingPlans[(string) $offeringId] ?? null;
+
+        return is_array($plan) ? $plan : null;
+    }
+
+    private function isValidTimeGridPayload(?array $timeGrid): bool
+    {
+        if ($timeGrid === null || ! is_array($timeGrid['days'] ?? null) || $timeGrid['days'] === []) {
+            return false;
+        }
+
+        foreach ($timeGrid['days'] as $day) {
+            if (! is_array($day)) {
+                return false;
+            }
+
+            $dayOfWeek = $day['day_of_week'] ?? null;
+            $start = $day['operating_start'] ?? null;
+            $end = $day['operating_end'] ?? null;
+            $validStarts = $day['valid_start_times'] ?? null;
+
+            if (! is_int($dayOfWeek) || $dayOfWeek < 1 || $dayOfWeek > 5
+                || ! is_string($start) || $start === ''
+                || ! is_string($end) || $end === ''
+                || $start >= $end
+                || ! is_array($validStarts) || $validStarts === []) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $plan
+     */
+    private function isValidMeetingPlanPayload(?array $plan): bool
+    {
+        if ($plan === null) {
+            return false;
+        }
+
+        $requirements = $plan['meeting_requirements'] ?? null;
+
+        if (! is_array($requirements) || $requirements === []) {
+            return false;
+        }
+
+        $hasMandatory = false;
+
+        foreach ($requirements as $requirement) {
+            if (! is_array($requirement)) {
+                return false;
+            }
+
+            $hasMandatory = $hasMandatory || (bool) ($requirement['mandatory'] ?? false);
+
+            if (! is_string($requirement['id'] ?? null) || $requirement['id'] === ''
+                || ! in_array($requirement['meeting_type'] ?? null, ['lecture', 'laboratory', 'seminar', 'other'], true)
+                || ! in_array($requirement['modality'] ?? null, ['face_to_face', 'online', 'hybrid'], true)
+                || ! is_int($requirement['frequency_per_week'] ?? null)
+                || $requirement['frequency_per_week'] < 1
+                || ! is_int($requirement['duration_minutes'] ?? null)
+                || $requirement['duration_minutes'] < 1) {
+                return false;
+            }
+        }
+
+        return $hasMandatory;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $policy
+     */
+    private function isValidFullTimePolicyPayload(?array $policy): bool
+    {
+        if ($policy === null
+            || ! is_string($policy['policy_id'] ?? null)
+            || ($policy['policy_id'] ?? '') === ''
+            || ! is_int($policy['policy_version'] ?? null)
+            || ($policy['policy_version'] ?? 0) < 1) {
+            return false;
+        }
+
+        $standardDays = $policy['standard_days'] ?? null;
+        $exceptions = $policy['exceptions'] ?? null;
+
+        if (! $this->isValidWeekdayList($standardDays) || ! is_array($exceptions) || ! array_is_list($exceptions)) {
+            return false;
+        }
+
+        foreach ($exceptions as $exception) {
+            if (! is_array($exception)
+                || ! is_string($exception['professor_id'] ?? null)
+                || ($exception['professor_id'] ?? '') === ''
+                || ! $this->isValidWeekdayList($exception['authorized_additional_days'] ?? null)
+                || array_intersect($exception['authorized_additional_days'], $standardDays) !== []) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isValidWeekdayList(mixed $days): bool
+    {
+        if (! is_array($days) || $days === [] || ! array_is_list($days)) {
+            return false;
+        }
+
+        foreach ($days as $day) {
+            if (! is_int($day) || $day < 1 || $day > 5) {
+                return false;
+            }
+        }
+
+        return $days === array_values(array_unique($days));
+    }
+
     private function inspectCapabilities(
         AcademicTerm $term,
         Collection $offerings,
         Collection $professors,
+        ?array $timeGrid,
+        array $meetingPlans,
+        array $capabilities,
         array &$issues,
     ): void {
         $termId = (string) $term->id;
 
-        if (self::CAPABILITIES['time_grid'] !== true) {
+        if ($timeGrid === null) {
             $this->addIssue(
                 $issues,
                 'blocking',
                 'time_grid_not_configured',
                 'meetings',
-                'No approved term-scoped time grid exists. Applicable days, operating hours, timezone, and valid start times cannot be supplied.',
+                'No approved term-scoped time grid exists. Open Configuration, create a Monday-to-Friday time grid, and have an administrator approve it.',
+                'academic_term',
+                $termId,
+            );
+        } elseif ($capabilities['time_grid'] !== true) {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'time_grid_invalid',
+                'meetings',
+                'The approved time grid has no usable days or fixed start times. Open Configuration and create a new approved revision.',
                 'academic_term',
                 $termId,
             );
         }
 
-        if (self::CAPABILITIES['meeting_plans'] !== true && $offerings->isNotEmpty()) {
+        $missingPlanIds = $offerings
+            ->filter(fn (SubjectOffering $offering): bool => $this->meetingPlanFor($meetingPlans, $offering->id) === null)
+            ->pluck('id')
+            ->map(fn ($id): string => (string) $id)
+            ->values()
+            ->all();
+
+        if ($missingPlanIds !== []) {
             $this->addIssue(
                 $issues,
                 'blocking',
                 'meeting_plans_not_configured',
                 'meetings',
-                'No approved class assignment meeting plans exist. Frequency, duration, modality, room type, and mandatory occurrences cannot be supplied.',
+                'One or more open class assignments have no approved meeting plan. Open Configuration and approve a plan with lecture and/or laboratory requirements.',
                 'academic_term',
                 $termId,
-                $offerings->pluck('id')->map(fn ($id): string => (string) $id)->all(),
+                $missingPlanIds,
+            );
+        }
+
+        $invalidPlanIds = $offerings
+            ->filter(function (SubjectOffering $offering) use ($meetingPlans): bool {
+                $plan = $this->meetingPlanFor($meetingPlans, $offering->id);
+
+                return $plan !== null && ! $this->isValidMeetingPlanPayload($plan);
+            })
+            ->pluck('id')
+            ->map(fn ($id): string => (string) $id)
+            ->values()
+            ->all();
+
+        if ($invalidPlanIds !== []) {
+            $this->addIssue(
+                $issues,
+                'blocking',
+                'meeting_plan_invalid',
+                'meetings',
+                'One or more approved meeting plans have no valid meeting requirements. Open Configuration and create a corrected revision.',
+                'academic_term',
+                $termId,
+                $invalidPlanIds,
             );
         }
 
@@ -859,7 +1133,7 @@ final class SchedulingReadinessService
             ->values()
             ->all();
 
-        if (self::CAPABILITIES['full_time_workday_policy'] !== true && $fullTimeProfessorIds !== []) {
+        if ($capabilities['full_time_workday_policy'] !== true && $fullTimeProfessorIds !== []) {
             $this->addIssue(
                 $issues,
                 'blocking',
@@ -879,7 +1153,7 @@ final class SchedulingReadinessService
             ->values()
             ->all();
 
-        if (self::CAPABILITIES['part_time_workload_targets'] !== true && $partTimeProfessorIds !== []) {
+        if ($capabilities['part_time_workload_targets'] !== true && $partTimeProfessorIds !== []) {
             $this->addIssue(
                 $issues,
                 'blocking',
@@ -892,7 +1166,7 @@ final class SchedulingReadinessService
             );
         }
 
-        if (self::CAPABILITIES['section_availability'] !== true) {
+        if ($capabilities['section_availability'] !== true) {
             $this->addIssue(
                 $issues,
                 'info',
@@ -904,7 +1178,7 @@ final class SchedulingReadinessService
             );
         }
 
-        if (self::CAPABILITIES['combined_classes'] !== true) {
+        if ($capabilities['combined_classes'] !== true) {
             $this->addIssue(
                 $issues,
                 'info',
@@ -916,7 +1190,7 @@ final class SchedulingReadinessService
             );
         }
 
-        if (self::CAPABILITIES['generation_records'] !== true) {
+        if ($capabilities['generation_records'] !== true) {
             $this->addIssue(
                 $issues,
                 'blocking',
@@ -928,7 +1202,7 @@ final class SchedulingReadinessService
             );
         }
 
-        if (self::CAPABILITIES['snapshot_history'] !== true) {
+        if ($capabilities['snapshot_history'] !== true) {
             $this->addIssue(
                 $issues,
                 'blocking',
@@ -940,7 +1214,7 @@ final class SchedulingReadinessService
             );
         }
 
-        if (self::CAPABILITIES['candidate_persistence'] !== true) {
+        if ($capabilities['candidate_persistence'] !== true) {
             $this->addIssue(
                 $issues,
                 'blocking',
@@ -953,15 +1227,30 @@ final class SchedulingReadinessService
         }
     }
 
-    private function hasRequiredGenerationCapabilities(): bool
+    /**
+     * @param  list<array<string, mixed>>  $issues
+     * @return array{
+     *     ready: bool,
+     *     blocking_count: int,
+     *     warning_count: int,
+     *     info_count: int,
+     *     issues: list<array<string, mixed>>
+     * }
+     */
+    private function layerSummary(array $issues, string $layer): array
     {
-        foreach (self::GENERATION_REQUIRED_CAPABILITIES as $capability) {
-            if ((self::CAPABILITIES[$capability] ?? false) !== true) {
-                return false;
-            }
-        }
+        $layerIssues = array_values(array_filter(
+            $issues,
+            fn (array $issue): bool => $issue['layer'] === $layer,
+        ));
 
-        return true;
+        return [
+            'ready' => $this->countSeverity($layerIssues, 'blocking') === 0,
+            'blocking_count' => $this->countSeverity($layerIssues, 'blocking'),
+            'warning_count' => $this->countSeverity($layerIssues, 'warning'),
+            'info_count' => $this->countSeverity($layerIssues, 'info'),
+            'issues' => $layerIssues,
+        ];
     }
 
     private function addIssue(

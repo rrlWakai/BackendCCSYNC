@@ -32,6 +32,10 @@ class SubjectOfferingManagementTest extends TestCase
             $this->getJson('/api/v1/academic/subject-offerings')
                 ->assertOk()
                 ->assertJsonStructure(['data' => ['offerings', 'pagination']]);
+
+            $this->getJson('/api/v1/academic/subject-offerings/preparation-plan?academic_term_id='.$term->id)
+                ->assertOk()
+                ->assertJsonStructure(['data' => ['preparation' => ['summary', 'classes', 'issues', 'warnings']]]);
         }
 
         $this->actingAs($this->makeUser(Role::ADMINISTRATOR));
@@ -66,6 +70,11 @@ class SubjectOfferingManagementTest extends TestCase
 
             $this->getJson('/api/v1/academic/subject-offerings')->assertForbidden();
             $this->getJson('/api/v1/academic/subject-offerings/options')->assertForbidden();
+            $this->getJson('/api/v1/academic/subject-offerings/preparation-plan?academic_term_id='.$term->id)
+                ->assertForbidden();
+            $this->postJson('/api/v1/academic/subject-offerings/prepare', [
+                'academic_term_id' => $term->id,
+            ])->assertForbidden();
             $this->getJson("/api/v1/academic/subject-offerings/{$offering->id}")->assertForbidden();
             $this->postJson('/api/v1/academic/subject-offerings', [])->assertForbidden();
             $this->patchJson("/api/v1/academic/subject-offerings/{$offering->id}", [])->assertForbidden();

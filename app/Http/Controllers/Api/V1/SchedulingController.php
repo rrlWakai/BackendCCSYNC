@@ -11,6 +11,7 @@ use App\Http\Requests\Scheduling\ReleaseRoomAllocationRequest;
 use App\Http\Requests\Scheduling\ResolveScheduleConflictRequest;
 use App\Http\Requests\Scheduling\SchedulingOptionsRequest;
 use App\Http\Requests\Scheduling\SchedulingReadinessRequest;
+use App\Http\Requests\Scheduling\SolveSchedulingRequest;
 use App\Http\Requests\Scheduling\StoreClassScheduleRequest;
 use App\Http\Requests\Scheduling\StoreFacultyAssignmentRequest;
 use App\Http\Requests\Scheduling\StoreRoomAllocationRequest;
@@ -30,7 +31,9 @@ use App\Models\Section;
 use App\Models\Subject;
 use App\Models\SubjectOffering;
 use App\Services\Scheduling\ScheduleManagementService;
+use App\Services\Scheduling\SchedulerClient;
 use App\Services\Scheduling\SchedulingReadinessService;
+use App\Services\Scheduling\SchedulingRequestBuilder;
 use App\Support\ApiResponse;
 use App\Support\SchedulePresenter;
 use Illuminate\Database\Eloquent\Builder;
@@ -45,6 +48,8 @@ final class SchedulingController extends Controller
     public function __construct(
         private readonly ScheduleManagementService $scheduling,
         private readonly SchedulingReadinessService $readiness,
+        private readonly SchedulingRequestBuilder $requestBuilder,
+        private readonly SchedulerClient $scheduler,
     ) {}
 
     public function options(SchedulingOptionsRequest $request): JsonResponse
@@ -138,6 +143,49 @@ final class SchedulingController extends Controller
         return ApiResponse::success(
             ['readiness' => $this->readiness->inspect($term)],
             'Scheduling readiness loaded.',
+        );
+    }
+
+    public function solve(SolveSchedulingRequest $request): JsonResponse
+    {
+        $term = AcademicTerm::query()->findOrFail($request->validated('academic_term_id'));
+        $correlationId = $request->validated('correlation_id');
+        $build = $this->requestBuilder->build($term, is_string($correlationId) ? $correlationId : null);
+
+        if (! $build->isSuccessful()) {
+            return ApiResponse::error(
+                'The scheduling request is incomplete.',
+                422,
+                ['issues' => $build->issues()],
+                'scheduling_request_incomplete',
+            );
+        }
+
+        $payload = $build->payload();
+
+        if ($payload === null) {
+            return ApiResponse::error(
+                'The scheduling request could not be built.',
+                500,
+                null,
+                'scheduling_request_build_failed',
+            );
+        }
+
+        $response = $this->scheduler->solve($payload);
+
+        if (! $response->isOk()) {
+            return ApiResponse::error(
+                $response->getMessage(),
+                $response->getHttpStatus() ?? 502,
+                $response->getBody(),
+                $response->getErrorCode(),
+            );
+        }
+
+        return ApiResponse::success(
+            ['result' => $response->getBody()],
+            'Scheduling candidate generated.',
         );
     }
 

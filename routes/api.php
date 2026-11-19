@@ -16,10 +16,11 @@ use App\Http\Controllers\Api\V1\MajorController;
 use App\Http\Controllers\Api\V1\MajorSelectionController;
 use App\Http\Controllers\Api\V1\MajorSelectionPeriodController;
 use App\Http\Controllers\Api\V1\PromotionController;
-use App\Http\Controllers\Api\V1\RoomController;
-use App\Http\Controllers\Api\V1\RoomMonitoringController;
 use App\Http\Controllers\Api\V1\RegistrationController;
 use App\Http\Controllers\Api\V1\RegistrationOptionsController;
+use App\Http\Controllers\Api\V1\RoomController;
+use App\Http\Controllers\Api\V1\RoomMonitoringController;
+use App\Http\Controllers\Api\V1\SchedulingConfigurationController;
 use App\Http\Controllers\Api\V1\SchedulingController;
 use App\Http\Controllers\Api\V1\SectionController;
 use App\Http\Controllers\Api\V1\StudentController;
@@ -170,6 +171,10 @@ Route::prefix('v1')
                     ->name('subject-offerings.options');
                 Route::get('/subject-offerings', [SubjectOfferingController::class, 'index'])
                     ->name('subject-offerings.index');
+                Route::get('/subject-offerings/preparation-plan', [SubjectOfferingController::class, 'preparationPlan'])
+                    ->name('subject-offerings.preparation-plan');
+                Route::post('/subject-offerings/prepare', [SubjectOfferingController::class, 'prepare'])
+                    ->name('subject-offerings.prepare');
                 Route::post('/subject-offerings', [SubjectOfferingController::class, 'store'])
                     ->name('subject-offerings.store');
                 Route::get('/subject-offerings/{subjectOffering}', [SubjectOfferingController::class, 'show'])
@@ -446,6 +451,51 @@ Route::prefix('v1')
                 ->name('scheduling.options');
             Route::get('/scheduling/readiness', [SchedulingController::class, 'readiness'])
                 ->name('scheduling.readiness');
+            Route::post('/scheduling/solve', [SchedulingController::class, 'solve'])
+                ->name('scheduling.solve');
+
+            Route::prefix('scheduling/configuration')
+                ->name('scheduling.configuration.')
+                ->group(function (): void {
+                    Route::get('/time-grid', [SchedulingConfigurationController::class, 'timeGrid'])
+                        ->name('time-grid.show');
+                    Route::post('/time-grids', [SchedulingConfigurationController::class, 'storeTimeGrid'])
+                        ->name('time-grids.store');
+                    Route::patch('/time-grids/{timeGrid}', [SchedulingConfigurationController::class, 'updateTimeGrid'])
+                        ->name('time-grids.update');
+                    Route::delete('/time-grids/{timeGrid}', [SchedulingConfigurationController::class, 'destroyTimeGrid'])
+                        ->name('time-grids.destroy');
+                    Route::post('/time-grids/{timeGrid}/approve', [SchedulingConfigurationController::class, 'approveTimeGrid'])
+                        ->name('time-grids.approve');
+                    Route::post('/time-grids/{timeGrid}/revise', [SchedulingConfigurationController::class, 'reviseTimeGrid'])
+                        ->name('time-grids.revise');
+
+                    Route::get('/full-time-policies', [SchedulingConfigurationController::class, 'fullTimePolicies'])
+                        ->name('full-time-policies.index');
+                    Route::post('/full-time-policies', [SchedulingConfigurationController::class, 'storeFullTimePolicy'])
+                        ->name('full-time-policies.store');
+                    Route::patch('/full-time-policies/{fullTimePolicy}', [SchedulingConfigurationController::class, 'updateFullTimePolicy'])
+                        ->name('full-time-policies.update');
+                    Route::delete('/full-time-policies/{fullTimePolicy}', [SchedulingConfigurationController::class, 'destroyFullTimePolicy'])
+                        ->name('full-time-policies.destroy');
+                    Route::post('/full-time-policies/{fullTimePolicy}/approve', [SchedulingConfigurationController::class, 'approveFullTimePolicy'])
+                        ->name('full-time-policies.approve');
+                    Route::post('/full-time-policies/{fullTimePolicy}/revise', [SchedulingConfigurationController::class, 'reviseFullTimePolicy'])
+                        ->name('full-time-policies.revise');
+
+                    Route::get('/meeting-plans', [SchedulingConfigurationController::class, 'meetingPlans'])
+                        ->name('meeting-plans.index');
+                    Route::post('/meeting-plans', [SchedulingConfigurationController::class, 'storeMeetingPlan'])
+                        ->name('meeting-plans.store');
+                    Route::patch('/meeting-plans/{meetingPlan}', [SchedulingConfigurationController::class, 'updateMeetingPlan'])
+                        ->name('meeting-plans.update');
+                    Route::delete('/meeting-plans/{meetingPlan}', [SchedulingConfigurationController::class, 'destroyMeetingPlan'])
+                        ->name('meeting-plans.destroy');
+                    Route::post('/meeting-plans/{meetingPlan}/approve', [SchedulingConfigurationController::class, 'approveMeetingPlan'])
+                        ->name('meeting-plans.approve');
+                    Route::post('/meeting-plans/{meetingPlan}/revise', [SchedulingConfigurationController::class, 'reviseMeetingPlan'])
+                        ->name('meeting-plans.revise');
+                });
             Route::get('/faculty-assignments', [SchedulingController::class, 'facultyAssignments'])
                 ->name('faculty-assignments.index');
             Route::post('/faculty-assignments', [SchedulingController::class, 'storeFacultyAssignment'])

@@ -4,6 +4,7 @@ namespace Tests\Support;
 
 use App\Models\AcademicTerm;
 use App\Models\ClassSchedule;
+use App\Models\CurriculumRequirement;
 use App\Models\FacultyAssignment;
 use App\Models\Professor;
 use App\Models\Program;
@@ -41,15 +42,15 @@ trait CreatesAcademicData
         ], $attributes));
     }
 
-    protected function makeProgram(): Program
+    protected function makeProgram(array $attributes = []): Program
     {
         $code = 'P'.Str::upper(Str::random(6));
 
-        return Program::create([
+        return Program::create(array_merge([
             'code' => $code,
             'name' => 'Program '.$code,
             'status' => 'active',
-        ]);
+        ], $attributes));
     }
 
     protected function makeAcademicTerm(bool $current = true): AcademicTerm
@@ -103,6 +104,24 @@ trait CreatesAcademicData
             'units' => 3.0,
             'lecture_hours' => 2.0,
             'lab_hours' => 3.0,
+            'status' => 'active',
+        ], $attributes));
+    }
+
+    protected function makeCurriculumRequirement(
+        Program $program,
+        YearLevel $yearLevel,
+        Subject $subject,
+        array $attributes = [],
+    ): CurriculumRequirement {
+        return CurriculumRequirement::create(array_merge([
+            'program_id' => $program->id,
+            'year_level_id' => $yearLevel->id,
+            'semester' => 'first',
+            'major_id' => null,
+            'classification' => 'common',
+            'subject_id' => $subject->id,
+            'requirement_type' => 'core',
             'status' => 'active',
         ], $attributes));
     }

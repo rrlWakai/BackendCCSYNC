@@ -7,7 +7,7 @@ use App\Models\Major;
 use App\Models\Program;
 use App\Models\Subject;
 use App\Models\YearLevel;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Collection;
 
 final class CurriculumService
 {
@@ -20,6 +20,7 @@ final class CurriculumService
         ?Major $major = null,
         ?string $semester = null,
         ?string $classification = null,
+        bool $activeOnly = true,
     ): Collection {
         $requirements = CurriculumRequirement::query()
             ->with('subject')
@@ -45,7 +46,8 @@ final class CurriculumService
 
         return $requirements
             ->pluck('subject')
-            ->filter(fn (?Subject $subject): bool => $subject !== null && $subject->status === 'active')
+            ->filter(fn (?Subject $subject): bool => $subject !== null
+                && (! $activeOnly || $subject->status === 'active'))
             ->unique('id')
             ->values();
     }

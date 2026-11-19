@@ -66,4 +66,14 @@ class AcademicTerm extends Model
     {
         return $this->hasMany(ScheduleConflict::class);
     }
+
+    public function schedulingTimeGrids(): HasMany
+    {
+        return $this->hasMany(SchedulingTimeGrid::class);
+    }
+
+    public function schedulingMeetingPlans(): HasMany
+    {
+        return $this->hasMany(SchedulingMeetingPlan::class);
+    }
 }

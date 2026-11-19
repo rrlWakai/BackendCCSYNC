@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Academic\IndexSubjectOfferingRequest;
+use App\Http\Requests\Academic\PrepareSubjectOfferingsRequest;
 use App\Http\Requests\Academic\StoreSubjectOfferingRequest;
 use App\Http\Requests\Academic\UpdateSubjectOfferingRequest;
 use App\Http\Requests\Academic\UpdateSubjectOfferingStatusRequest;
@@ -13,6 +14,7 @@ use App\Models\Program;
 use App\Models\Section;
 use App\Models\Subject;
 use App\Models\SubjectOffering;
+use App\Services\Academic\AcademicClassPreparationService;
 use App\Services\Academic\SubjectOfferingManagementService;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -20,7 +22,10 @@ use Illuminate\Support\Facades\Gate;
 
 final class SubjectOfferingController extends Controller
 {
-    public function __construct(private readonly SubjectOfferingManagementService $offerings) {}
+    public function __construct(
+        private readonly SubjectOfferingManagementService $offerings,
+        private readonly AcademicClassPreparationService $preparation,
+    ) {}
 
     public function options(): JsonResponse
     {
@@ -75,6 +80,28 @@ final class SubjectOfferingController extends Controller
                 ? $this->offerings->summary((int) $filters['academic_term_id'])
                 : null,
         ], 'Class assignments loaded.');
+    }
+
+    public function preparationPlan(PrepareSubjectOfferingsRequest $request): JsonResponse
+    {
+        $term = AcademicTerm::query()->findOrFail($request->validated('academic_term_id'));
+
+        return ApiResponse::success([
+            'preparation' => $this->preparation->plan($term),
+        ], 'Class preparation plan loaded.');
+    }
+
+    public function prepare(PrepareSubjectOfferingsRequest $request): JsonResponse
+    {
+        $term = AcademicTerm::query()->findOrFail($request->validated('academic_term_id'));
+        $result = $this->preparation->prepare($term);
+
+        return ApiResponse::success([
+            'created_count' => $result['created'],
+            'preparation' => $result['plan'],
+        ], $result['created'] > 0
+            ? 'Required class assignments prepared.'
+            : 'All required class assignments were already prepared.');
     }
 
     public function store(StoreSubjectOfferingRequest $request): JsonResponse

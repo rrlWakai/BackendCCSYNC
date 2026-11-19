@@ -55,4 +55,9 @@ class SubjectOffering extends Model
     {
         return $this->hasMany(ClassSchedule::class);
     }
+
+    public function schedulingMeetingPlans(): HasMany
+    {
+        return $this->hasMany(SchedulingMeetingPlan::class);
+    }
 }
