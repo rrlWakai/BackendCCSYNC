@@ -50,7 +50,7 @@ final class SchedulerClient
                 'correlation_id' => $correlationId,
             ]);
 
-            return SchedulerResponse::serviceUnavailable('Unable to reach the scheduling service.');
+            return SchedulerResponse::connectionFailed('Unable to reach the scheduling service.');
         }
 
         if ($response->successful()) {
@@ -100,7 +100,7 @@ final class SchedulerClient
         } catch (ConnectionException|RequestException) {
             Log::warning('scheduler.health.live_connection_failed');
 
-            return SchedulerResponse::serviceUnavailable('Unable to reach the scheduling service.');
+            return SchedulerResponse::connectionFailed('Unable to reach the scheduling service.');
         }
 
         if (! $response->successful()) {
@@ -138,7 +138,7 @@ final class SchedulerClient
         } catch (ConnectionException|RequestException) {
             Log::warning('scheduler.health.ready_connection_failed');
 
-            return SchedulerResponse::serviceUnavailable('Unable to reach the scheduling service.');
+            return SchedulerResponse::connectionFailed('Unable to reach the scheduling service.');
         }
 
         if (! $response->successful()) {

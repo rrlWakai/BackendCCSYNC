@@ -127,8 +127,8 @@ return new class extends Migration
             $table->id();
             $table->uuid('uuid')->unique();
             $table->foreignId('scheduling_candidate_id')->constrained('scheduling_candidates')->cascadeOnDelete();
-            $table->foreignId('offering_meeting_requirement_id')->constrained('scheduling_meeting_requirements')->restrictOnDelete();
-            $table->foreignId('previous_published_schedule_id')->nullable()->constrained('class_schedules')->restrictOnDelete();
+            $table->foreignId('offering_meeting_requirement_id')->constrained('scheduling_meeting_requirements', 'id', 'cmp_offering_req_fk')->restrictOnDelete();
+            $table->foreignId('previous_published_schedule_id')->nullable()->constrained('class_schedules', 'id', 'cmp_prev_schedule_fk')->restrictOnDelete();
             $table->char('meeting_instance_id', 64)->unique();
             $table->unsignedSmallInteger('occurrence_number');
             $table->unsignedTinyInteger('day_of_week');
@@ -164,7 +164,7 @@ return new class extends Migration
             $table->collation = 'utf8mb4_unicode_ci';
 
             $table->id();
-            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements')->cascadeOnDelete();
+            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements', 'id', 'cmo_placement_fk')->cascadeOnDelete();
             $table->foreignId('subject_offering_id')->constrained('subject_offerings')->restrictOnDelete();
             $table->boolean('is_primary')->default(true);
             $table->timestamps();
@@ -183,8 +183,8 @@ return new class extends Migration
             $table->collation = 'utf8mb4_unicode_ci';
 
             $table->id();
-            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements')->cascadeOnDelete();
-            $table->foreignId('candidate_meeting_offering_id')->constrained('candidate_meeting_offerings')->cascadeOnDelete();
+            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements', 'id', 'cmpf_placement_fk')->cascadeOnDelete();
+            $table->foreignId('candidate_meeting_offering_id')->constrained('candidate_meeting_offerings', 'id', 'cmpf_offering_fk')->cascadeOnDelete();
             $table->foreignId('subject_offering_id')->constrained('subject_offerings')->restrictOnDelete();
             $table->foreignId('faculty_assignment_id')->constrained('faculty_assignments')->restrictOnDelete();
             $table->boolean('is_primary')->default(true);
@@ -204,7 +204,7 @@ return new class extends Migration
             $table->collation = 'utf8mb4_unicode_ci';
 
             $table->id();
-            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements')->cascadeOnDelete();
+            $table->foreignId('candidate_meeting_placement_id')->constrained('candidate_meeting_placements', 'id', 'cra_placement_fk')->cascadeOnDelete();
             $table->foreignId('room_id')->constrained('rooms')->restrictOnDelete();
             $table->string('status', 16);
             $table->timestamps();

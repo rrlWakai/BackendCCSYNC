@@ -5,7 +5,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
-use RuntimeException;
+
 
 return new class extends Migration
 {
@@ -65,7 +65,7 @@ return new class extends Migration
             $table->collation = 'utf8mb4_unicode_ci';
 
             $table->id();
-            $table->foreignId('scheduling_candidate_revision_id')->constrained('scheduling_candidate_revisions')->cascadeOnDelete();
+            $table->foreignId('scheduling_candidate_revision_id')->constrained('scheduling_candidate_revisions', 'id', 'crse_revision_fk')->cascadeOnDelete();
             $table->string('from_status', 20)->nullable();
             $table->string('to_status', 20);
             $table->foreignId('actor_user_id')->nullable()->constrained('users')->nullOnDelete();

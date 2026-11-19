@@ -36,6 +36,16 @@ final class SchedulerResponse
         );
     }
 
+    public static function connectionFailed(string $message): self
+    {
+        return new self(
+            ok: false,
+            message: $message,
+            errorCode: 'scheduler_unreachable',
+            httpStatus: 503,
+        );
+    }
+
     public static function authenticationFailed(string $message): self
     {
         return new self(

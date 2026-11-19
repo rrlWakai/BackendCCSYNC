@@ -40,9 +40,16 @@ final class SchedulingReadinessService
         'scheduler_service_not_configured',
         'scheduler_api_key_not_configured',
         'scheduler_contract_version_unsupported',
+        'scheduler_service_unreachable',
         'scheduler_liveness_check_failed',
         'scheduler_service_not_ready',
+        'scheduler_readiness_check_failed',
         'scheduler_service_authentication_failed',
+    ];
+
+    private const SCHEDULER_UNREACHABLE_ERROR_CODES = [
+        'scheduler_unreachable',
+        'scheduler_timeout',
     ];
 
     private const ASSIGNMENT_ROLES = ['lead', 'co_instructor', 'lab_instructor', 'substitute'];
@@ -170,6 +177,7 @@ final class SchedulingReadinessService
         $contractCompatible = config('scheduler.contract_version') === '1.0';
         $candidatePersistenceReady = ($capabilities['candidate_persistence'] ?? false) === true
             && ($capabilities['candidate_revisions'] ?? false) === true;
+        $schedulerStatus = $this->schedulerStatus($schedulerService, $apiKeyConfigured, $contractCompatible);
 
         $blockingCount = $this->countSeverity($issues, 'blocking');
         $warningCount = $this->countSeverity($issues, 'warning');
@@ -229,6 +237,7 @@ final class SchedulingReadinessService
             'capabilities' => $capabilities,
             'capability_details' => $capabilityDetails,
             'scheduler_service' => $schedulerService,
+            'scheduler_status' => $schedulerStatus,
             'inspected_at' => now()->toIso8601String(),
         ];
     }
@@ -306,30 +315,59 @@ final class SchedulingReadinessService
                 'body' => null,
             ];
 
+        $unreachableReported = false;
+
         if ($live['ok'] !== true) {
-            $this->addIssue(
-                $issues,
-                'blocking',
-                'scheduler_liveness_check_failed',
-                'integration',
-                'The scheduling engine did not pass its public liveness check.',
-            );
+            if ($this->isSchedulerUnreachable($live)) {
+                $this->addIssue(
+                    $issues,
+                    'blocking',
+                    'scheduler_service_unreachable',
+                    'integration',
+                    'The scheduling engine could not be reached or the health request timed out. Confirm the Render service status, SCHEDULER_URL, and outbound network access.',
+                );
+                $unreachableReported = true;
+            } else {
+                $this->addIssue(
+                    $issues,
+                    'blocking',
+                    'scheduler_liveness_check_failed',
+                    'integration',
+                    'The scheduling engine did not pass its public liveness check. Check the Python service health endpoint and startup logs.',
+                );
+            }
         }
 
         if ($ready['ok'] !== true && $apiKeyConfigured) {
             $authenticationFailed = ($ready['error_code'] ?? null) === 'scheduler_authentication_failed';
 
-            $this->addIssue(
-                $issues,
-                'blocking',
-                $authenticationFailed
-                    ? 'scheduler_service_authentication_failed'
-                    : 'scheduler_service_not_ready',
-                'integration',
-                $authenticationFailed
-                    ? 'The scheduling engine rejected the configured service credentials.'
-                    : 'The scheduling engine did not pass its authenticated readiness check.',
-            );
+            if ($authenticationFailed) {
+                $this->addIssue(
+                    $issues,
+                    'blocking',
+                    'scheduler_service_authentication_failed',
+                    'integration',
+                    'The scheduling engine rejected the configured service credentials. Confirm Laravel and Python use the same SCHEDULER_API_KEY.',
+                );
+            } elseif ($this->isSchedulerUnreachable($ready)) {
+                if (! $unreachableReported) {
+                    $this->addIssue(
+                        $issues,
+                        'blocking',
+                        'scheduler_service_unreachable',
+                        'integration',
+                        'The scheduling engine could not be reached or the health request timed out. Confirm the Render service status, SCHEDULER_URL, and outbound network access.',
+                    );
+                }
+            } else {
+                $this->addIssue(
+                    $issues,
+                    'blocking',
+                    'scheduler_readiness_check_failed',
+                    'integration',
+                    'The scheduling engine did not pass its authenticated readiness check. Check OR-Tools startup and the shared service configuration.',
+                );
+            }
         }
 
         $live['checked_at'] = $checkedAt;
@@ -351,6 +389,127 @@ final class SchedulingReadinessService
             'error_code' => $response->getErrorCode(),
             'body' => $response->getBody(),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $schedulerService
+     * @return array{state: string, diagnostic: string, url_configured: bool, api_key_configured: bool, contract_compatible: bool}
+     */
+    private function schedulerStatus(
+        array $schedulerService,
+        bool $apiKeyConfigured,
+        bool $contractCompatible,
+    ): array {
+        $urlConfigured = ($schedulerService['configured'] ?? false) === true;
+        $live = is_array($schedulerService['live'] ?? null) ? $schedulerService['live'] : [];
+        $ready = is_array($schedulerService['ready'] ?? null) ? $schedulerService['ready'] : [];
+        $liveOk = ($live['ok'] ?? false) === true;
+        $readyOk = ($ready['ok'] ?? false) === true;
+
+        if (! $urlConfigured) {
+            return $this->schedulerStatusResult(
+                'scheduler_url_missing',
+                'SCHEDULER_URL is not configured with a valid URL. Set it to the deployed scheduling engine base URL.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if (! $apiKeyConfigured) {
+            return $this->schedulerStatusResult(
+                'scheduler_api_key_missing',
+                'SCHEDULER_API_KEY is not configured. Set the shared scheduling engine key in Render.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if (! $contractCompatible) {
+            return $this->schedulerStatusResult(
+                'contract_incompatible',
+                'The configured scheduler contract version is not supported by this backend. Use Scheduling Contract v1.0.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if ($this->isSchedulerUnreachable($live) || $this->isSchedulerUnreachable($ready)) {
+            return $this->schedulerStatusResult(
+                'scheduler_unreachable',
+                'The scheduling engine could not be reached or the health request timed out. Confirm the Render service status, SCHEDULER_URL, and outbound network access.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if (($ready['error_code'] ?? null) === 'scheduler_authentication_failed') {
+            return $this->schedulerStatusResult(
+                'scheduler_authentication_failed',
+                'The scheduling engine rejected the service credentials. Confirm Laravel and Python use the same SCHEDULER_API_KEY.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if (! $liveOk) {
+            return $this->schedulerStatusResult(
+                'scheduler_health_check_failed',
+                'The scheduling engine did not pass its public liveness check. Check the Python service health endpoint and startup logs.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        if (! $readyOk) {
+            return $this->schedulerStatusResult(
+                'scheduler_readiness_check_failed',
+                'The scheduling engine did not pass its authenticated readiness check. Check OR-Tools startup and the shared service configuration.',
+                $urlConfigured,
+                $apiKeyConfigured,
+                $contractCompatible,
+            );
+        }
+
+        return $this->schedulerStatusResult(
+            'ready',
+            'The scheduling engine passed liveness and authenticated readiness checks for Scheduling Contract v1.0.',
+            $urlConfigured,
+            $apiKeyConfigured,
+            $contractCompatible,
+        );
+    }
+
+    /**
+     * @return array{state: string, diagnostic: string, url_configured: bool, api_key_configured: bool, contract_compatible: bool}
+     */
+    private function schedulerStatusResult(
+        string $state,
+        string $diagnostic,
+        bool $urlConfigured,
+        bool $apiKeyConfigured,
+        bool $contractCompatible,
+    ): array {
+        return [
+            'state' => $state,
+            'diagnostic' => $diagnostic,
+            'url_configured' => $urlConfigured,
+            'api_key_configured' => $apiKeyConfigured,
+            'contract_compatible' => $contractCompatible,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     */
+    private function isSchedulerUnreachable(array $response): bool
+    {
+        return in_array($response['error_code'] ?? null, self::SCHEDULER_UNREACHABLE_ERROR_CODES, true);
     }
 
     private function inspectTerm(AcademicTerm $term, array &$issues): void
