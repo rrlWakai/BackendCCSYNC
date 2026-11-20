@@ -17,7 +17,7 @@ final class IndexActivitiesRequest extends ApiFormRequest
             'from_date' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
             'to_date' => ['sometimes', 'nullable', 'date_format:Y-m-d', 'after_or_equal:from_date'],
             'page' => ['sometimes', 'integer', 'min:1'],
-            'per_page' => ['sometimes', 'integer', 'min:10', 'max:100'],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];
     }
 }

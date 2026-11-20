@@ -184,6 +184,9 @@ class AcademicStructureTest extends TestCase
         $this->getJson('/api/v1/academic/subjects?search=Systems&per_page=10')
             ->assertOk()
             ->assertJsonPath('data.pagination.total', 1);
+        $this->getJson('/api/v1/academic/subjects?per_page=10')
+            ->assertOk()
+            ->assertJsonPath('data.subjects.0.id', $id);
         $this->patchJson('/api/v1/academic/subjects/'.$id, [
             'title' => 'Advanced Systems Analysis',
         ])->assertOk()->assertJsonPath('data.subject.title', 'Advanced Systems Analysis');

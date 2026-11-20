@@ -18,7 +18,9 @@ final class SubjectController extends Controller
     {
         Gate::authorize('viewAny', Subject::class);
         $result = AcademicDirectory::paginate(
-            Subject::query()->withCount(['curriculumRequirements', 'subjectOfferings']),
+            Subject::query()
+                ->withCount(['curriculumRequirements', 'subjectOfferings'])
+                ->orderByDesc('subjects.id'),
             $request,
             ['code', 'title', 'description'],
             ['status' => 'status'],
