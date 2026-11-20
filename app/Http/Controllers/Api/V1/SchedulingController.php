@@ -372,7 +372,27 @@ final class SchedulingController extends Controller
             if ($user->student->status !== 'active') {
                 throw new NotFoundHttpException('Schedule profile not found.');
             }
-            $offeringIds = $user->student->enrollments()
+            $student = $user->student;
+            $placements = $student->placements()
+                ->where('status', 'active')
+                ->where(function (Builder $placement) use ($student): void {
+                    if ($student->current_placement_id !== null) {
+                        $placement->whereKey($student->current_placement_id);
+                    } else {
+                        $placement->where('is_current', true);
+                    }
+                })
+                ->get();
+
+            $sectionIds = $placements->pluck('section_id')->filter()->unique()->values()->all();
+            if ($sectionIds === []) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereHas('subjectOffering', fn (Builder $offering) => $offering
+                    ->whereIn('section_id', $sectionIds));
+            }
+
+            $offeringIds = $student->enrollments()
                 ->where('status', 'enrolled')
                 ->select('subject_offering_id');
             $query->whereIn('subject_offering_id', $offeringIds);

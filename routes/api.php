@@ -221,6 +221,8 @@ Route::prefix('v1')
                 Route::post('/check-in', [RoomMonitoringController::class, 'checkIn'])
                     ->middleware('throttle:room-monitoring-scan')
                     ->name('check-in');
+                Route::get('/history', [RoomMonitoringController::class, 'professorHistory'])->name('history');
+                Route::post('/end', [RoomMonitoringController::class, 'endProfessorUsage'])->name('end');
             });
 
         Route::prefix('students')
@@ -457,8 +459,23 @@ Route::prefix('v1')
             Route::post('/scheduling/solve', [SchedulingController::class, 'solve'])
                 ->name('scheduling.solve');
 
+            Route::get('/scheduling/publications/active', [SchedulingCandidateController::class, 'activePublication'])
+                ->name('scheduling.publications.active');
+            Route::get('/scheduling/publications', [SchedulingCandidateController::class, 'publications'])
+                ->name('scheduling.publications.index');
+
             Route::get('/scheduling/candidates/{candidate}', [SchedulingCandidateController::class, 'show'])
                 ->name('scheduling.candidates.show');
+            Route::get('/scheduling/candidates/{candidate}/status-events', [SchedulingCandidateController::class, 'statusEvents'])
+                ->name('scheduling.candidates.status-events');
+            Route::post('/scheduling/candidates/{candidate}/review', [SchedulingCandidateController::class, 'review'])
+                ->name('scheduling.candidates.review');
+            Route::post('/scheduling/candidates/{candidate}/approve', [SchedulingCandidateController::class, 'approve'])
+                ->name('scheduling.candidates.approve');
+            Route::post('/scheduling/candidates/{candidate}/reject', [SchedulingCandidateController::class, 'reject'])
+                ->name('scheduling.candidates.reject');
+            Route::post('/scheduling/candidates/{candidate}/publish', [SchedulingCandidateController::class, 'publish'])
+                ->name('scheduling.candidates.publish');
             Route::post('/scheduling/candidates/{candidate}/revisions', [SchedulingCandidateController::class, 'storeRevision'])
                 ->name('scheduling.candidates.revisions.store');
             Route::get('/scheduling/candidate-revisions/{revision}', [SchedulingCandidateController::class, 'showRevision'])
@@ -469,7 +486,7 @@ Route::prefix('v1')
                 ->name('scheduling.candidate-revisions.validate');
             Route::post('/scheduling/candidate-revisions/{revision}/transition', [SchedulingCandidateController::class, 'transition'])
                 ->name('scheduling.candidate-revisions.transition');
-            Route::get('/scheduling/candidate-revisions/{revision}/status-events', [SchedulingCandidateController::class, 'statusEvents'])
+            Route::get('/scheduling/candidate-revisions/{revision}/status-events', [SchedulingCandidateController::class, 'revisionStatusEvents'])
                 ->name('scheduling.candidate-revisions.status-events');
 
             Route::prefix('scheduling/configuration')

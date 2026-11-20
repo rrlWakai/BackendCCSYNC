@@ -528,6 +528,7 @@ final class SchedulerResponseValidator
                         ? array_values($requirement['valid_start_times'])
                         : [],
                     'required_room_type' => $requirement['required_room_type'] ?? null,
+                    'required_equipment' => self::isIdentifierList($requirement['required_equipment'] ?? []) ?? [],
                 ];
             }
         }
@@ -633,6 +634,7 @@ final class SchedulerResponseValidator
                         'duration_minutes',
                         'modality',
                         'required_room_type',
+                        'required_equipment',
                         'mandatory',
                         'allowed_days',
                         'valid_start_times',
@@ -666,6 +668,7 @@ final class SchedulerResponseValidator
                     'allowed_days' => $first['allowed_days'],
                     'valid_start_times' => $first['valid_start_times'],
                     'required_room_type' => $first['required_room_type'],
+                    'required_equipment' => $first['required_equipment'],
                 ];
             }
         }
@@ -925,6 +928,12 @@ final class SchedulerResponseValidator
             if ($source['required_room_type'] !== null
                 && ($room['room_type'] ?? null) !== $source['required_room_type']) {
                 $errors[] = "{$path}_room_type_mismatch";
+            }
+
+            $requiredEquipment = self::isIdentifierList($source['required_equipment'] ?? []) ?? [];
+            $roomEquipment = self::isIdentifierList($room['equipment'] ?? []) ?? [];
+            if (array_diff($requiredEquipment, $roomEquipment) !== []) {
+                $errors[] = "{$path}_room_equipment_missing";
             }
         }
     }

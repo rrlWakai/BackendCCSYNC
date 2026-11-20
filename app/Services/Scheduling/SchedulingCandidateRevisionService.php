@@ -322,6 +322,7 @@ final class SchedulingCandidateRevisionService
     public function summary(SchedulingCandidateRevision $revision): array
     {
         return [
+            'id' => $revision->id,
             'uuid' => $revision->uuid,
             'revision_number' => $revision->revision_number,
             'parent_revision_id' => $revision->parent_revision_id,
@@ -584,6 +585,31 @@ final class SchedulingCandidateRevisionService
             'metadata' => $metadata,
             'created_at' => now(),
         ]);
+    }
+
+    public function publicationContent(SchedulingCandidate $candidate): array
+    {
+        $active = SchedulingCandidateRevision::query()
+            ->where('scheduling_candidate_id', $candidate->id)
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->orderByDesc('revision_number')
+            ->first();
+
+        if ($active !== null) {
+            if ($active->status !== 'validated' || $active->validation_status !== 'valid') {
+                throw new InvalidCandidateRevisionTransitionException(
+                    'The active candidate revision must be validated before the candidate can advance or publish.',
+                );
+            }
+
+            return $this->decodeContent($active->content_canonical);
+        }
+
+        if ($candidate->validation_status !== 'valid') {
+            throw new InvalidArgumentException('Only a valid scheduling candidate can advance or publish.');
+        }
+
+        return $this->contentFromCandidate($candidate);
     }
 
     private function contentFromCandidate(SchedulingCandidate $candidate): array

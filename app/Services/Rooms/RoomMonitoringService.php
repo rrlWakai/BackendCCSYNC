@@ -282,6 +282,37 @@ final class RoomMonitoringService
         }, attempts: 3);
     }
 
+    /** Return the authenticated professor's own room usage history. */
+    public function professorHistory(User $actor, array $filters = []): array
+    {
+        $professor = $this->activeProfessor($actor);
+        $query = RoomOccupancy::query()->with($this->occupancyRelations())
+            ->where('professor_id', $professor->id)
+            ->orderByDesc('class_date')->orderByDesc('checked_in_at');
+        if (! empty($filters['date'])) $query->whereDate('class_date', $filters['date']);
+        $paginator = $query->paginate(min(100, max(10, (int) ($filters['per_page'] ?? 25))));
+        return [
+            'occupancies' => collect($paginator->items())->map(fn (RoomOccupancy $item): array => $this->presentOccupancy($item))->values(),
+            'pagination' => ['current_page' => $paginator->currentPage(), 'last_page' => $paginator->lastPage(), 'per_page' => $paginator->perPage(), 'total' => $paginator->total()],
+        ];
+    }
+
+    public function endProfessorUsage(User $actor): array
+    {
+        $professor = $this->activeProfessor($actor);
+        return DB::transaction(function () use ($professor, $actor): array {
+            $now = CarbonImmutable::now(AttendanceClock::timezone());
+            $occupancy = RoomOccupancy::query()->where('professor_id', $professor->id)
+                ->whereNull('checked_out_at')->where('scheduled_end_at', '>', $now->setTimezone('UTC'))
+                ->latest('checked_in_at')->lockForUpdate()->first();
+            if ($occupancy === null) {
+                throw ValidationException::withMessages(['occupancy' => 'You do not have an active room usage session.']);
+            }
+            $this->closeOccupancy($occupancy, $now, 'professor', $actor);
+            return ['occupancy' => $this->presentOccupancy($occupancy->fresh())];
+        }, attempts: 3);
+    }
+
     public function availability(array $filters): array
     {
         $timezone = AttendanceClock::timezone();
@@ -900,6 +931,7 @@ final class RoomMonitoringService
             $checkedOutAt = $occupancy->scheduled_end_at;
             $checkoutSource = 'scheduled';
         }
+        $durationSeconds = $checkedOutAt === null ? null : max(0, $occupancy->checked_in_at->diffInSeconds($checkedOutAt));
 
         return [
             'id' => $occupancy->id,
@@ -924,6 +956,7 @@ final class RoomMonitoringService
             'scheduled_end_at' => $local($occupancy->scheduled_end_at),
             'checked_in_at' => $local($occupancy->checked_in_at),
             'checked_out_at' => $local($checkedOutAt),
+            'duration_seconds' => $durationSeconds,
             'checkout_source' => $checkoutSource,
             'mismatch_reason' => $occupancy->mismatch_reason,
             'discrepancy_status' => $occupancy->discrepancy_status,

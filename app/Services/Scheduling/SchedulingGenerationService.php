@@ -660,6 +660,10 @@ final class SchedulingGenerationService
             'status' => $candidate->status,
             'validation_status' => $candidate->validation_status,
             'assignment_count' => $candidate->placements()->count(),
+            'snapshot_sha256' => $candidate->snapshot_sha256,
+            'approved_at' => $candidate->approved_at?->toIso8601String(),
+            'rejected_at' => $candidate->rejected_at?->toIso8601String(),
+            'published_at' => $candidate->published_at?->toIso8601String(),
         ];
     }
 
@@ -881,20 +885,40 @@ final class SchedulingGenerationService
             ? $payload['published_timetable_baseline']
             : [])
             ->filter(fn ($baseline): bool => is_array($baseline))
-            ->keyBy(function (array $baseline): string {
+            ->flatMap(function (array $baseline): array {
                 $roomAllocations = is_array($baseline['room_allocations'] ?? null) ? $baseline['room_allocations'] : [];
                 $firstRoom = is_array($roomAllocations[0] ?? null) ? $roomAllocations[0] : [];
+                $offeringIds = is_array($baseline['subject_offering_ids'] ?? null)
+                    ? $baseline['subject_offering_ids']
+                    : [$baseline['subject_offering_id'] ?? null];
+                $keys = [];
 
-                return $this->baselineKey(
-                    $baseline['meeting_instance_id'] ?? null,
-                    is_array($baseline['subject_offering_ids'] ?? null)
-                        ? $baseline['subject_offering_ids']
-                        : [$baseline['subject_offering_id'] ?? null],
+                if (is_string($baseline['meeting_instance_id'] ?? null) && $baseline['meeting_instance_id'] !== '') {
+                    $keys[] = $this->baselineKey(
+                        $baseline['meeting_instance_id'],
+                        $offeringIds,
+                        $baseline['day_of_week'] ?? null,
+                        $baseline['start_time'] ?? null,
+                        $baseline['end_time'] ?? null,
+                        $firstRoom['room_id'] ?? null,
+                    );
+                }
+
+                $keys[] = $this->baselineKey(
+                    null,
+                    $offeringIds,
                     $baseline['day_of_week'] ?? null,
                     $baseline['start_time'] ?? null,
                     $baseline['end_time'] ?? null,
                     $firstRoom['room_id'] ?? null,
                 );
+
+                $indexed = [];
+                foreach ($keys as $key) {
+                    $indexed[$key] = $baseline;
+                }
+
+                return $indexed;
             });
 
         foreach (is_array($result['assignments'] ?? null) ? $result['assignments'] : [] as $assignment) {
@@ -903,15 +927,24 @@ final class SchedulingGenerationService
             }
 
             $meetingInstanceId = (string) ($assignment['meeting_instance_id'] ?? '');
-            $baselineKey = $this->baselineKey(
-                null,
-                is_array($assignment['subject_offering_ids'] ?? null) ? $assignment['subject_offering_ids'] : [],
+            $offeringIds = is_array($assignment['subject_offering_ids'] ?? null) ? $assignment['subject_offering_ids'] : [];
+            $instanceBaselineKey = $this->baselineKey(
+                $meetingInstanceId !== '' ? $meetingInstanceId : null,
+                $offeringIds,
                 $assignment['day_of_week'] ?? null,
                 $assignment['start_time'] ?? null,
                 $assignment['end_time'] ?? null,
                 $assignment['room_id'] ?? null,
             );
-            $baseline = $baselines->get($baselineKey);
+            $placementBaselineKey = $this->baselineKey(
+                null,
+                $offeringIds,
+                $assignment['day_of_week'] ?? null,
+                $assignment['start_time'] ?? null,
+                $assignment['end_time'] ?? null,
+                $assignment['room_id'] ?? null,
+            );
+            $baseline = $baselines->get($instanceBaselineKey) ?? $baselines->get($placementBaselineKey);
             $previousRoomId = null;
 
             if (is_array($baseline) && is_array($baseline['room_allocations'] ?? null)) {

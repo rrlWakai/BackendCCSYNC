@@ -1,5 +1,4 @@
 <?php
-
 namespace App\Http\Requests\Scheduling;
 
 use App\Models\ClassSchedule;

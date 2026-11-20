@@ -1016,7 +1016,9 @@ final class SchedulingRequestBuilder
             $payload[] = [
                 'schedule_id' => (string) $schedule->id,
                 'subject_offering_id' => (string) $schedule->subject_offering_id,
-                'meeting_instance_id' => null,
+                'meeting_instance_id' => $schedule->meeting_instance_id === null
+                    ? null
+                    : (string) $schedule->meeting_instance_id,
                 'day_of_week' => (int) $schedule->day_of_week,
                 'start_time' => substr((string) $schedule->start_time, 0, 5),
                 'end_time' => substr((string) $schedule->end_time, 0, 5),

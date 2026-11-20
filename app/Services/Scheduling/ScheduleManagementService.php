@@ -467,6 +467,11 @@ final class ScheduleManagementService
 
         $conflicts = [];
         foreach ($overlapping as $other) {
+            if ($schedule->meeting_instance_id !== null
+                && $other->meeting_instance_id === $schedule->meeting_instance_id) {
+                continue;
+            }
+
             if ($other->subjectOffering->section_id === $sectionId) {
                 $conflicts[] = $this->conflictPayload($other, 'section', sectionId: $sectionId);
             }

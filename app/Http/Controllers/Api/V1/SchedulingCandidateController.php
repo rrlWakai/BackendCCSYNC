@@ -3,8 +3,15 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Exceptions\InvalidCandidateRevisionTransitionException;
+use App\Exceptions\InvalidSchedulingCandidateTransitionException;
 use App\Exceptions\StaleCandidateRevisionException;
+use App\Exceptions\StaleSchedulingCandidateException;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Scheduling\ApproveSchedulingCandidateRequest;
+use App\Http\Requests\Scheduling\IndexSchedulingPublicationRequest;
+use App\Http\Requests\Scheduling\PublishSchedulingCandidateRequest;
+use App\Http\Requests\Scheduling\RejectSchedulingCandidateRequest;
+use App\Http\Requests\Scheduling\ReviewSchedulingCandidateRequest;
 use App\Http\Requests\Scheduling\StoreCandidateRevisionRequest;
 use App\Http\Requests\Scheduling\TransitionCandidateRevisionRequest;
 use App\Http\Requests\Scheduling\UpdateCandidateRevisionRequest;
@@ -12,6 +19,7 @@ use App\Http\Requests\Scheduling\ValidateCandidateRevisionRequest;
 use App\Models\ClassSchedule;
 use App\Models\SchedulingCandidate;
 use App\Models\SchedulingCandidateRevision;
+use App\Services\Scheduling\SchedulingCandidateLifecycleService;
 use App\Services\Scheduling\SchedulingCandidateRevisionService;
 use App\Services\Scheduling\SchedulingGenerationService;
 use App\Support\ApiResponse;
@@ -26,6 +34,7 @@ final class SchedulingCandidateController extends Controller
     public function __construct(
         private readonly SchedulingCandidateRevisionService $revisions,
         private readonly SchedulingGenerationService $generations,
+        private readonly SchedulingCandidateLifecycleService $lifecycle,
     ) {}
 
     public function show(SchedulingCandidate $candidate): JsonResponse
@@ -170,7 +179,7 @@ final class SchedulingCandidateController extends Controller
         );
     }
 
-    public function statusEvents(SchedulingCandidateRevision $revision): JsonResponse
+    public function revisionStatusEvents(SchedulingCandidateRevision $revision): JsonResponse
     {
         Gate::authorize('viewAny', ClassSchedule::class);
 
@@ -181,6 +190,121 @@ final class SchedulingCandidateController extends Controller
                 ->map(fn ($event): array => $this->revisions->eventSummary($event))
                 ->all(),
         ], 'Scheduling candidate revision history loaded.');
+    }
+
+    public function review(
+        ReviewSchedulingCandidateRequest $request,
+        SchedulingCandidate $candidate,
+    ): JsonResponse {
+        Gate::authorize('review', $candidate);
+
+        try {
+            $candidate = $this->lifecycle->review(
+                $candidate,
+                (int) $request->validated('expected_version'),
+                $request->user(),
+                (string) ($request->validated('reason') ?? ''),
+            );
+        } catch (Throwable $exception) {
+            return $this->lifecycleFailure($exception);
+        }
+
+        return ApiResponse::success([
+            'candidate' => $this->generations->candidateSummary($candidate),
+        ], 'Scheduling candidate submitted for review.');
+    }
+
+    public function approve(
+        ApproveSchedulingCandidateRequest $request,
+        SchedulingCandidate $candidate,
+    ): JsonResponse {
+        Gate::authorize('approve', $candidate);
+
+        try {
+            $candidate = $this->lifecycle->approve(
+                $candidate,
+                (int) $request->validated('expected_version'),
+                $request->user(),
+                (string) ($request->validated('reason') ?? ''),
+            );
+        } catch (Throwable $exception) {
+            return $this->lifecycleFailure($exception);
+        }
+
+        return ApiResponse::success([
+            'candidate' => $this->generations->candidateSummary($candidate),
+        ], 'Scheduling candidate approved.');
+    }
+
+    public function reject(
+        RejectSchedulingCandidateRequest $request,
+        SchedulingCandidate $candidate,
+    ): JsonResponse {
+        Gate::authorize('reject', $candidate);
+
+        try {
+            $candidate = $this->lifecycle->reject(
+                $candidate,
+                (int) $request->validated('expected_version'),
+                $request->user(),
+                (string) $request->validated('reason'),
+            );
+        } catch (Throwable $exception) {
+            return $this->lifecycleFailure($exception);
+        }
+
+        return ApiResponse::success([
+            'candidate' => $this->generations->candidateSummary($candidate),
+        ], 'Scheduling candidate rejected.');
+    }
+
+    public function publish(
+        PublishSchedulingCandidateRequest $request,
+        SchedulingCandidate $candidate,
+    ): JsonResponse {
+        Gate::authorize('publish', $candidate);
+
+        try {
+            $result = $this->lifecycle->publish(
+                $candidate,
+                (int) $request->validated('expected_version'),
+                $request->user(),
+                (string) ($request->validated('reason') ?? ''),
+            );
+        } catch (Throwable $exception) {
+            return $this->lifecycleFailure($exception);
+        }
+
+        return ApiResponse::success([
+            'publication' => $result['publication'],
+            'candidate' => $this->generations->candidateSummary($result['candidate']),
+            'created_schedule_count' => $result['created_schedule_count'],
+            'superseded_schedule_count' => $result['superseded_schedule_count'],
+            'idempotent' => $result['idempotent'],
+        ], $result['idempotent'] ? 'Candidate timetable is already published.' : 'Candidate timetable published.');
+    }
+
+    public function statusEvents(SchedulingCandidate $candidate): JsonResponse
+    {
+        Gate::authorize('viewAny', ClassSchedule::class);
+
+        return ApiResponse::success([
+            'status_events' => $this->lifecycle->candidateStatusEvents($candidate),
+        ], 'Scheduling candidate history loaded.');
+    }
+
+    public function publications(IndexSchedulingPublicationRequest $request): JsonResponse
+    {
+        return ApiResponse::success([
+            'publications' => $this->lifecycle->publications((int) $request->validated('academic_term_id')),
+        ], 'Timetable publications loaded.');
+    }
+
+    public function activePublication(IndexSchedulingPublicationRequest $request): JsonResponse
+    {
+        return ApiResponse::success([
+            'publication' => $this->lifecycle->activePublication((int) $request->validated('academic_term_id')),
+        ], 'Active timetable publication loaded.');
     }
 
     private function content(SchedulingCandidateRevision $revision): array
@@ -216,6 +340,38 @@ final class SchedulingCandidateController extends Controller
                 Response::HTTP_UNPROCESSABLE_ENTITY,
                 null,
                 'invalid_candidate_revision_content',
+            );
+        }
+
+        throw $exception;
+    }
+
+    private function lifecycleFailure(Throwable $exception): JsonResponse
+    {
+        if ($exception instanceof StaleSchedulingCandidateException) {
+            return ApiResponse::error(
+                $exception->getMessage(),
+                Response::HTTP_CONFLICT,
+                null,
+                'stale_scheduling_candidate',
+            );
+        }
+
+        if ($exception instanceof InvalidSchedulingCandidateTransitionException) {
+            return ApiResponse::error(
+                $exception->getMessage(),
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+                null,
+                'invalid_scheduling_candidate_transition',
+            );
+        }
+
+        if ($exception instanceof InvalidArgumentException) {
+            return ApiResponse::error(
+                $exception->getMessage(),
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+                null,
+                'invalid_scheduling_candidate_publication',
             );
         }
 

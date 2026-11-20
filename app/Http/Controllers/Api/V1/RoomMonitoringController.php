@@ -132,6 +132,16 @@ final class RoomMonitoringController extends Controller
         );
     }
 
+    public function professorHistory(RoomHistoryRequest $request): JsonResponse
+    {
+        return ApiResponse::success($this->monitoring->professorHistory($this->actor($request), $request->validated()), 'Your room usage history loaded.');
+    }
+
+    public function endProfessorUsage(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->monitoring->endProfessorUsage($this->actor($request)), 'Room usage ended.');
+    }
+
     private function actor(Request $request): User
     {
         $actor = $request->user();

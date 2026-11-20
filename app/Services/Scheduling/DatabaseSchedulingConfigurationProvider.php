@@ -93,6 +93,7 @@ final class DatabaseSchedulingConfigurationProvider implements SchedulingConfigu
                         'duration_minutes' => (int) $requirement->duration_minutes,
                         'modality' => (string) $requirement->modality,
                         'required_room_type' => $requirement->required_room_type,
+                        'required_equipment' => [],
                         'mandatory' => (bool) $requirement->mandatory,
                         'allowed_days' => $requirement->allowed_days === null
                             ? null

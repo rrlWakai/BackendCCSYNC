@@ -19,12 +19,19 @@ class ClassSchedule extends Model
         'schedule_type',
         'modality',
         'status',
+        'timetable_publication_id',
+        'candidate_meeting_placement_id',
+        'meeting_instance_id',
+        'superseded_at',
     ];
 
     protected function casts(): array
     {
         return [
             'day_of_week' => 'integer',
+            'timetable_publication_id' => 'integer',
+            'candidate_meeting_placement_id' => 'integer',
+            'superseded_at' => 'datetime',
         ];
     }
 
@@ -56,5 +63,20 @@ class ClassSchedule extends Model
     public function attendanceSessions(): HasMany
     {
         return $this->hasMany(AttendanceSession::class);
+    }
+
+    public function publication(): BelongsTo
+    {
+        return $this->belongsTo(TimetablePublication::class);
+    }
+
+    public function candidatePlacement(): BelongsTo
+    {
+        return $this->belongsTo(CandidateMeetingPlacement::class, 'candidate_meeting_placement_id');
+    }
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(ClassScheduleEvent::class);
     }
 }
