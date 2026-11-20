@@ -12,7 +12,7 @@ final class EnsureUserIsActive
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $user = $request->user();
+          $user = $request->user();
 
         if ($user === null || $user->isActive()) {
             return $next($request);
@@ -20,12 +20,19 @@ final class EnsureUserIsActive
 
         $sessionUser = Auth::guard('web')->user();
 
-        if ($request->hasSession() && $sessionUser !== null && $sessionUser->is($user)) {
+        if (
+            $request->hasSession() &&
+            $sessionUser !== null &&
+            get_class($sessionUser) === get_class($user) &&
+            $sessionUser->getAuthIdentifier() === $user->getAuthIdentifier()
+        ) {
             Auth::guard('web')->logout();
+
             $request->session()->invalidate();
             $request->session()->regenerateToken();
         }
 
-        throw new AccessDeniedHttpException('You do not have permission to access this resource.');
-    }
+        throw new AccessDeniedHttpException(
+            'You do not have permission to access this resource.'
+        );    }
 }
