@@ -25,6 +25,7 @@ use App\Services\Attendance\AttendanceManagementService;
 use App\Services\Attendance\AttendanceLedgerService;
 use App\Services\Attendance\QrAttendanceService;
 use App\Support\ApiResponse;
+use App\Support\AttendanceClock;
 use App\Support\AttendancePresenter;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
